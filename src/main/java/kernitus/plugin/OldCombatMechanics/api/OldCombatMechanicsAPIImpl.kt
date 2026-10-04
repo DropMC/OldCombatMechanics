@@ -24,7 +24,7 @@ class OldCombatMechanicsAPIImpl(
     override fun getAllowedModesets(world: World): Set<String> = Config.getAllowedModesets(world)
 
     override fun getModesetForPlayer(player: Player): String? =
-        PlayerStorage.getPlayerData(player.uniqueId).getModesetForWorld(player.world.uid)
+        PlayerStorage.getModesetForWorld(player.uniqueId, player.world.uid)
 
     override fun setModesetForPlayer(
         player: Player,

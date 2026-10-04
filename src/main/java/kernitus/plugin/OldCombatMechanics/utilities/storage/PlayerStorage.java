@@ -20,6 +20,7 @@ import org.bson.codecs.configuration.CodecRegistry;
 import org.bson.io.BasicOutputBuffer;
 import org.bukkit.Bukkit;
 import org.bukkit.scheduler.BukkitTask;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.File;
 import java.io.IOException;
@@ -27,7 +28,11 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
@@ -42,6 +47,7 @@ public class PlayerStorage {
     private static Document data;
     private static final AtomicReference<BukkitTask> saveTask = new AtomicReference<>();
     private static CodecRegistry codecRegistry;
+    private static final Map<UUID, Map<UUID, String>> modesetCache = new ConcurrentHashMap<>();
 
     public static void initialise(OCMMain plugin) {
         PlayerStorage.plugin = plugin;
@@ -56,6 +62,7 @@ public class PlayerStorage {
         PlayerStorage.documentCodec = new DocumentCodec(codecRegistry);
 
         data = loadData();
+        modesetCache.clear();
 
         saveTask.set(null);
     }
@@ -110,6 +117,24 @@ public class PlayerStorage {
         return codecRegistry.get(PlayerData.class).decode(bsonDocument.asBsonReader(), DecoderContext.builder().build());
     }
 
+    public static @Nullable String getModesetForWorld(UUID uuid, UUID worldId) {
+        Map<UUID, String> modesets = modesetCache.get(uuid);
+        if (modesets == null) {
+            final Map<UUID, String> loaded = snapshot(getPlayerData(uuid));
+            final Map<UUID, String> existing = modesetCache.putIfAbsent(uuid, loaded);
+            modesets = existing != null ? existing : loaded;
+        }
+        return modesets.get(worldId);
+    }
+
+    public static void forget(UUID uuid) {
+        modesetCache.remove(uuid);
+    }
+
+    private static Map<UUID, String> snapshot(PlayerData playerData) {
+        return Collections.unmodifiableMap(new HashMap<>(playerData.getModesetByWorld()));
+    }
+
     public static void setPlayerData(UUID uuid, PlayerData playerData) {
         // Create a BsonDocumentWriter to hold the encoded data
         BsonDocumentWriter writer = new BsonDocumentWriter(new BsonDocument());
@@ -129,5 +154,6 @@ public class PlayerStorage {
 
         // Put the Document into your data map
         data.put(uuid.toString(), document);
+        modesetCache.put(uuid, snapshot(playerData));
     }
 }

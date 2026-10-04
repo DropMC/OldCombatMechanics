@@ -94,6 +94,12 @@ public class ModuleAttackSounds extends OCMModule {
             if (blockedSounds.isEmpty())
                 return;
 
+            final Object packetType = packetEvent.getPacketType();
+            if (!PacketType.Play.Server.NAMED_SOUND_EFFECT.equals(packetType)
+                    && !PacketType.Play.Server.SOUND_EFFECT.equals(packetType)) {
+                return;
+            }
+
             final Object playerObject = packetEvent.getPlayer();
             if (!(playerObject instanceof Player))
                 return;
@@ -101,12 +107,6 @@ public class ModuleAttackSounds extends OCMModule {
             final Player player = (Player) playerObject;
             if (!isEnabled(player))
                 return;
-
-            final Object packetType = packetEvent.getPacketType();
-            if (!PacketType.Play.Server.NAMED_SOUND_EFFECT.equals(packetType)
-                    && !PacketType.Play.Server.SOUND_EFFECT.equals(packetType)) {
-                return;
-            }
 
             try {
                 WrapperPlayServerSoundEffect wrapper = new WrapperPlayServerSoundEffect(packetEvent);

@@ -89,7 +89,7 @@ public abstract class OCMModule implements Listener {
             return true;
         }
         final World world = humanEntity.getWorld();
-        final String modesetName = PlayerStorage.getPlayerData(humanEntity.getUniqueId()).getModesetForWorld(world.getUID());
+        final String modesetName = PlayerStorage.getModesetForWorld(humanEntity.getUniqueId(), world.getUID());
 
         if (modesetName == null) {
             debug("No modeset found!", humanEntity);
