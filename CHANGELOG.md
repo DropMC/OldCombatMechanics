@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.8.0](https://github.com/kernitus/BukkitOldCombatMechanics/compare/v2.7.0...v2.8.0) (2026-10-04)
+
+
+### Features
+
+* **projectiles:** add legacy trajectory, launch offset and motion options ([48520d6](https://github.com/kernitus/BukkitOldCombatMechanics/commit/48520d6b896864b494c9e7b005865a9182a49556))
+
+
+### Bug Fixes
+
+* **blocking:** clear legacy shield state safely on reload ([7814048](https://github.com/kernitus/BukkitOldCombatMechanics/commit/7814048083958636201312e5d881a9dfad87cf89))
+* **combat:** restore fractional blocking and accurate fishing knockback ([0922b81](https://github.com/kernitus/BukkitOldCombatMechanics/commit/0922b814a5b6f39728cb88332f0e17682448db93))
+* **knockback:** restore arrow base motion while preserving native Punch ([ecc31a0](https://github.com/kernitus/BukkitOldCombatMechanics/commit/ecc31a00bde916e60d2076f45e10e668ac60131a))
+* **regeneration:** restore native healing intervals and preserve rate ownership ([fe59dd9](https://github.com/kernitus/BukkitOldCombatMechanics/commit/fe59dd9fe6702fb56f5084be76f858fd9d3bc251))
+
 ## [2.7.0](https://github.com/kernitus/BukkitOldCombatMechanics/compare/v2.6.0...v2.7.0) (2026-10-03)
 
 This release adds configurable splash-potion throwing, fishing gravity and knockback friction, improves combat damage calculations, and restores compatibility with Minecraft 26.3.
