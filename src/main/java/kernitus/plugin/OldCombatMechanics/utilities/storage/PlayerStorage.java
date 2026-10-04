@@ -120,8 +120,9 @@ public class PlayerStorage {
     public static @Nullable String getModesetForWorld(UUID uuid, UUID worldId) {
         Map<UUID, String> modesets = modesetCache.get(uuid);
         if (modesets == null) {
-            modesets = snapshot(getPlayerData(uuid));
-            modesetCache.put(uuid, modesets);
+            final Map<UUID, String> loaded = snapshot(getPlayerData(uuid));
+            final Map<UUID, String> existing = modesetCache.putIfAbsent(uuid, loaded);
+            modesets = existing != null ? existing : loaded;
         }
         return modesets.get(worldId);
     }
