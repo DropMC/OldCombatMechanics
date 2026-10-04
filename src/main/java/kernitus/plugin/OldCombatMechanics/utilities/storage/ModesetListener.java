@@ -104,6 +104,7 @@ public class ModesetListener extends OCMModule {
     public void onPlayerQuit(PlayerQuitEvent event) {
         final Player player = event.getPlayer();
         PlayerModuleOverrides.clearAll(player);
+        PlayerStorage.forget(player.getUniqueId());
     }
 
     @EventHandler(ignoreCancelled = false)
