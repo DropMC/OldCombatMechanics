@@ -5,8 +5,6 @@
  */
 package kernitus.plugin.OldCombatMechanics;
 
-import com.github.retrooper.packetevents.PacketEvents;
-import io.github.retrooper.packetevents.factory.spigot.SpigotPacketEventsBuilder;
 import kernitus.plugin.OldCombatMechanics.api.OldCombatMechanicsAPI;
 import kernitus.plugin.OldCombatMechanics.api.OldCombatMechanicsAPIImpl;
 import kernitus.plugin.OldCombatMechanics.commands.OCMCommandCompleter;
@@ -64,12 +62,6 @@ public class OCMMain extends JavaPlugin {
     }
 
     @Override
-    public void onLoad() {
-        PacketEvents.setAPI(SpigotPacketEventsBuilder.build(this));
-        PacketEvents.getAPI().load();
-    }
-
-    @Override
     public void onEnable() {
         INSTANCE = this;
 
@@ -87,7 +79,6 @@ public class OCMMain extends JavaPlugin {
 
         // Initialise the Messenger utility
         Messenger.initialise(this);
-        PacketEvents.getAPI().init();
 
         // Register all the modules
         registerModules();
@@ -212,8 +203,6 @@ public class OCMMain extends JavaPlugin {
             Bukkit.getServicesManager().unregister(OldCombatMechanicsAPI.class, api);
             api = null;
         }
-
-        PacketEvents.getAPI().terminate();
 
         // Logging to console the disabling of OCM
         logger.info(pdfFile.getName() + " v" + pdfFile.getVersion() + " has been disabled");

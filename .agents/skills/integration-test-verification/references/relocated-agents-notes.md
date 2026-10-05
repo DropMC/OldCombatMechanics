@@ -9,9 +9,9 @@ This reference preserves detailed repository context that previously made the ro
 - Tests run inside a real Paper server started by the Gradle `run-paper` plugin.
 - RunServer output is redirected to `build/integration-test-logs/<version>.log`; `checkTestResults<version>` prints only a compact summary/failures to the console.
 - `KotestRunner` writes `plugins/OldCombatMechanicsTest/test-failures.txt` so CI can surface failure reasons without opening the full server log.
-- PacketEvents is shaded into the plugin; integration tests do not inject external packet libraries.
-- `relocateIntegrationTestClasses` relocates PacketEvents references in test classes only.
-- `integrationTestJar` embeds relocated test classes plus runtime dependencies, excluding PacketEvents so the test plugin resolves PacketEvents from the main plugin’s shaded copy.
+- PacketEvents is not shaded; test servers load the standalone packetevents plugin jar from `downloadPacketEventsPlugin`, and both `OldCombatMechanicsTest` and the API smoke test plugin declare `depend: [packetevents]`.
+- `relocateIntegrationTestClasses` no longer relocates anything; it only packages the test classes.
+- `integrationTestJar` embeds test classes plus runtime dependencies, excluding PacketEvents so the test plugin resolves it from the standalone packetevents plugin.
 - `PacketCancellationIntegrationTest` uses a cancellable `CompletableFuture.await()` and drives PacketEvents via `PacketEventsImplHelper.handleClientBoundPacket` with a synthetic `User`.
 - `PacketCancellationIntegrationTest` sets the Bukkit player on the synthetic PacketEvents event so module listeners can match `PacketSendEvent#getPlayer`.
 - Matrix task: `integrationTest` depends on `integrationTestMatrix`.

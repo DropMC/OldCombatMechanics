@@ -162,11 +162,11 @@ public class ModuleSwordBlocking extends OCMModule {
     private void initialisePacketEventsClientVersion() {
         try {
             final ClassLoader loader = plugin.getClass().getClassLoader();
-            final Class<?> packetEventsClass = Class.forName("kernitus.plugin.OldCombatMechanics.lib.packetevents.api.PacketEvents", true, loader);
-            final Class<?> packetEventsApiClass = Class.forName("kernitus.plugin.OldCombatMechanics.lib.packetevents.api.PacketEventsAPI", true, loader);
-            final Class<?> playerManagerClass = Class.forName("kernitus.plugin.OldCombatMechanics.lib.packetevents.api.manager.player.PlayerManager", true, loader);
-            final Class<?> clientVersionClass = Class.forName("kernitus.plugin.OldCombatMechanics.lib.packetevents.api.protocol.player.ClientVersion", true, loader);
-            final Class<?> userClass = Class.forName("kernitus.plugin.OldCombatMechanics.lib.packetevents.api.protocol.player.User", true, loader);
+            final Class<?> packetEventsClass = Class.forName("com.github.retrooper.packetevents.PacketEvents", true, loader);
+            final Class<?> packetEventsApiClass = Class.forName("com.github.retrooper.packetevents.PacketEventsAPI", true, loader);
+            final Class<?> playerManagerClass = Class.forName("com.github.retrooper.packetevents.manager.player.PlayerManager", true, loader);
+            final Class<?> clientVersionClass = Class.forName("com.github.retrooper.packetevents.protocol.player.ClientVersion", true, loader);
+            final Class<?> userClass = Class.forName("com.github.retrooper.packetevents.protocol.player.User", true, loader);
             packetEventsGetAPI = packetEventsClass.getMethod("getAPI");
             packetEventsGetPlayerManager = packetEventsApiClass.getMethod("getPlayerManager");
             packetEventsGetUser = playerManagerClass.getMethod("getUser", Object.class);
