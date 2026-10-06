@@ -31,7 +31,7 @@ This file holds always-on repository guidance and routing hints. Detailed workfl
 - JDKs used locally: 8, 11, 17, 25.
 - Main integration tests live in `src/integrationTest/kotlin` and are packaged into `OldCombatMechanics-<version>-tests.jar`.
 - Entrypoint test plugin class: `kernitus.plugin.OldCombatMechanics.OCMTestMain`.
-- PacketEvents is shaded into the main plugin; integration tests resolve PacketEvents from that shaded copy rather than injecting a separate external packet library.
+- PacketEvents is not shaded: OCM is `compileOnly` against it and declares `depend: [packetevents]`, so every server needs the standalone packetevents plugin. A second shaded copy injected its own Netty handlers and processed every packet twice. Test servers get the release jar from `downloadPacketEventsPlugin`, pinned by `packetEventsVersion` and `packetEventsPluginSha1` in `build.gradle.kts`; bump both together.
 
 ## Build and validation quick reference
 

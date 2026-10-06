@@ -94,6 +94,9 @@ group = "kernitus.plugin.OldCombatMechanics"
 version = "2.5.1" // x-release-please-version
 description = "OldCombatMechanics"
 
+val packetEventsVersion = "2.14.0"
+val packetEventsPluginSha1 = "f576038135551cb5549856bafec8d4f2456e1ba5"
+
 java {
     toolchain {
         // We can build with Java 17 but still support MC >=1.9
@@ -153,8 +156,9 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     // JSR-305 annotations (javax.annotation.Nullable)
     compileOnly("com.google.code.findbugs:jsr305:3.0.2")
-    // PacketEvents
-    implementation("com.github.retrooper:packetevents-spigot:2.13.0")
+    // PacketEvents, provided at runtime by the standalone packetevents plugin
+    compileOnly("com.github.retrooper:packetevents-spigot:$packetEventsVersion")
+    add("integrationTestCompileOnly", "com.github.retrooper:packetevents-spigot:$packetEventsVersion")
     // XSeries
     implementation("com.github.cryptomorin:XSeries:13.7.0")
 
@@ -246,8 +250,6 @@ val shadowJarTask =
         dependencies {
             relocate("org.bstats", "kernitus.plugin.OldCombatMechanics.lib.bstats")
             relocate("com.cryptomorin.xseries", "kernitus.plugin.OldCombatMechanics.lib.xseries")
-            relocate("com.github.retrooper.packetevents", "kernitus.plugin.OldCombatMechanics.lib.packetevents.api")
-            relocate("io.github.retrooper.packetevents", "kernitus.plugin.OldCombatMechanics.lib.packetevents.impl")
         }
     }
 
@@ -279,8 +281,6 @@ val relocateIntegrationTestClasses =
         dependsOn("compileIntegrationTestKotlin")
         configurations = emptyList()
         from(sourceSets["integrationTest"].output)
-        relocate("com.github.retrooper.packetevents", "kernitus.plugin.OldCombatMechanics.lib.packetevents.api")
-        relocate("io.github.retrooper.packetevents", "kernitus.plugin.OldCombatMechanics.lib.packetevents.impl")
     }
 
 val integrationTestJarTask =
@@ -558,6 +558,38 @@ fun sha1(file: File): String {
     return digest.digest().joinToString("") { "%02x".format(it) }
 }
 
+val packetEventsPluginFile = layout.buildDirectory.file("server-plugins/packetevents-spigot-$packetEventsVersion.jar")
+
+val downloadPacketEventsPluginTask =
+    tasks.register("downloadPacketEventsPlugin") {
+        description = "Downloads the PacketEvents plugin that test servers load alongside OCM."
+        outputs.file(packetEventsPluginFile)
+        notCompatibleWithConfigurationCache("Downloads the PacketEvents plugin jar.")
+        doLast {
+            val target = packetEventsPluginFile.get().asFile
+            if (target.exists() && sha1(target).equals(packetEventsPluginSha1, ignoreCase = true)) {
+                return@doLast
+            }
+            target.parentFile.mkdirs()
+            val tmpFile = File(target.parentFile, "${target.name}.tmp")
+            URI(
+                "https://github.com/retrooper/packetevents/releases/download/" +
+                    "v$packetEventsVersion/packetevents-spigot-$packetEventsVersion.jar",
+            ).toURL().openStream().use { input ->
+                tmpFile.outputStream().use { output -> input.copyTo(output) }
+            }
+            val downloadedSha1 = sha1(tmpFile)
+            if (!downloadedSha1.equals(packetEventsPluginSha1, ignoreCase = true)) {
+                tmpFile.delete()
+                throw GradleException(
+                    "Downloaded PacketEvents plugin hash mismatch. Expected $packetEventsPluginSha1, got $downloadedSha1.",
+                )
+            }
+            tmpFile.copyTo(target, overwrite = true)
+            tmpFile.delete()
+        }
+    }
+
 tasks.register("integrationTest") {
     group = "verification"
     description = "Runs integration tests against all configured Paper versions."
@@ -674,6 +706,7 @@ for (version in integrationTestVersions) {
                 },
             )
 
+            pluginJars.from(downloadPacketEventsPluginTask)
             pluginJars.from(shadowJarTask.flatMap { it.archiveFile })
             pluginJars.from(integrationTestJarTask.flatMap { it.archiveFile })
             pluginJars.from(configurations["integrationTestServerPlugins"])
@@ -812,6 +845,7 @@ val runApiSmokeServerTask =
             },
         )
 
+        pluginJars.from(downloadPacketEventsPluginTask)
         pluginJars.from(shadowJarTask.flatMap { it.archiveFile })
         pluginJars.from(apiSmokeTestJarTask.flatMap { it.archiveFile })
 

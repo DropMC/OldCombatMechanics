@@ -105,20 +105,20 @@ class ConsumableComponentIntegrationTest :
         fun packetEventsClass(name: String): Class<*> = Class.forName(name, true, ocm.javaClass.classLoader)
 
         fun packetEventsClientVersionClass(): Class<*> =
-            packetEventsClass("kernitus.plugin.OldCombatMechanics.lib.packetevents.api.protocol.player.ClientVersion")
+            packetEventsClass("com.github.retrooper.packetevents.protocol.player.ClientVersion")
 
         fun packetEventsUserClass(): Class<*> =
-            packetEventsClass("kernitus.plugin.OldCombatMechanics.lib.packetevents.api.protocol.player.User")
+            packetEventsClass("com.github.retrooper.packetevents.protocol.player.User")
 
         fun packetEventsUserProfileClass(): Class<*> =
-            packetEventsClass("kernitus.plugin.OldCombatMechanics.lib.packetevents.api.protocol.player.UserProfile")
+            packetEventsClass("com.github.retrooper.packetevents.protocol.player.UserProfile")
 
         fun packetEventsConnectionStateClass(): Class<*> =
-            packetEventsClass("kernitus.plugin.OldCombatMechanics.lib.packetevents.api.protocol.ConnectionState")
+            packetEventsClass("com.github.retrooper.packetevents.protocol.ConnectionState")
 
         fun packetEventsApi(): Any {
             val packetEventsClass =
-                packetEventsClass("kernitus.plugin.OldCombatMechanics.lib.packetevents.api.PacketEvents")
+                packetEventsClass("com.github.retrooper.packetevents.PacketEvents")
             return packetEventsClass.getMethod("getAPI").invoke(null)
                 ?: error("PacketEvents API not available")
         }
