@@ -26,6 +26,7 @@ import org.bukkit.inventory.ItemStack;
 import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashSet;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
@@ -59,7 +60,7 @@ public class DefenceUtils {
             EntityDamageEvent.DamageCause.DRAGON_BREATH
     // In 1.19 FIRE bypasses armour, but it doesn't in 1.8 so we don't add it here
     );
-    private static final Set<String> warnedUnknownArmourEnchants = new HashSet<>();
+    private static final Set<String> warnedUnknownArmourEnchants = ConcurrentHashMap.newKeySet();
     private static final Set<Enchantment> VANILLA_ENCHANTMENTS = initVanillaEnchantments();
     private static final Material POINTED_DRIPSTONE = Material.matchMaterial("POINTED_DRIPSTONE");
 

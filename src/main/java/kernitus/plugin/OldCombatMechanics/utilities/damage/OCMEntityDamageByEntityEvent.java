@@ -5,6 +5,8 @@
  */
 package kernitus.plugin.OldCombatMechanics.utilities.damage;
 
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
+
 import com.cryptomorin.xseries.XEnchantment;
 import com.cryptomorin.xseries.XPotion;
 import kernitus.plugin.OldCombatMechanics.utilities.potions.PotionEffects;
@@ -22,6 +24,7 @@ import org.bukkit.NamespacedKey;
 import org.bukkit.enchantments.Enchantment;
 
 import java.util.HashSet;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.Optional;
 import java.util.Set;
 
@@ -61,7 +64,7 @@ public class OCMEntityDamageByEntityEvent extends Event implements Cancellable {
 
     private boolean was1_8Crit = false;
     private boolean wasSprinting = false;
-    private static final Set<String> warnedUnknownWeaponEnchants = new HashSet<>();
+    private static final Set<String> warnedUnknownWeaponEnchants = ConcurrentHashMap.newKeySet();
     private static final Set<Enchantment> VANILLA_ENCHANTMENTS = initVanillaEnchantments();
 
     // Here we reverse-engineer all the various damages caused by removing them one at a time, backwards from what NMS code does.
@@ -75,7 +78,8 @@ public class OCMEntityDamageByEntityEvent extends Event implements Cancellable {
 
         // We ignore attacks like arrows etc. because we do not need to change the attack side of those
         // Other modules such as old armour strength work independently of this event
-        if (!(damager instanceof LivingEntity)) {
+        // A living damager in another region (Folia) cannot be read here: treat it like a non-living one.
+        if (!(damager instanceof LivingEntity) || !OCMScheduler.isOwnedByCurrentRegion(damager)) {
             setCancelled(true);
             return;
         }

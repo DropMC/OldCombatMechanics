@@ -8,6 +8,8 @@ package kernitus.plugin.OldCombatMechanics.utilities.damage;
 import kernitus.plugin.OldCombatMechanics.OCMMain;
 import kernitus.plugin.OldCombatMechanics.module.OCMModule;
 import kernitus.plugin.OldCombatMechanics.module.ModuleSwordBlocking;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.TaskHandle;
 import org.bukkit.Bukkit;
 import org.bukkit.NamespacedKey;
 import org.bukkit.entity.Entity;
@@ -20,28 +22,32 @@ import org.bukkit.event.entity.EntityDamageEvent;
 import java.lang.reflect.Method;
 import java.util.Map;
 import java.util.UUID;
-import java.util.HashMap;
-import java.util.Iterator;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 public class EntityDamageByEntityListener extends OCMModule {
 
     private static EntityDamageByEntityListener INSTANCE;
-    private boolean enabled;
+    private volatile boolean enabled;
+    // Both maps are written by the damaged entity's thread. Changes to one key in both maps happen inside a
+    // compute on lastDamageExpiries, so the memory sweep on the global thread never sees half an update.
     private final Map<UUID, Double> lastDamages;
-    private final Map<UUID, Long> lastDamageExpiryTicks;
-    private long tickCounter;
-    private int expirySweepTaskId = -1;
+    private final ConcurrentHashMap<UUID, Expiry> lastDamageExpiries;
+    private volatile TaskHandle expirySweepTask;
     private static final long EXPIRY_SWEEP_INTERVAL_TICKS = 20L;
     private static final long MIN_LAST_DAMAGE_TTL_TICKS = 20L;
+    // Memory only: entries untouched for this long are dropped by the sweep. Gameplay expiry uses entity ticks.
+    private static final long MIN_SWEEP_AGE_NANOS = TimeUnit.SECONDS.toNanos(60L);
+    private static final long NANOS_PER_TICK = TimeUnit.MILLISECONDS.toNanos(50L);
     private static final String[] DAMAGE_TYPE_REGISTRIES = {"damage_type", "damage_types"};
     private static final String BYPASSES_COOLDOWN_TAG = "bypasses_cooldown";
-    private DamageSourceCooldownBypassSupport damageSourceCooldownBypassSupport;
+    private volatile DamageSourceCooldownBypassSupport damageSourceCooldownBypassSupport;
 
     public EntityDamageByEntityListener(OCMMain plugin) {
         super(plugin, "entity-damage-listener");
         INSTANCE = this;
-        lastDamages = new HashMap<>();
-        lastDamageExpiryTicks = new HashMap<>();
+        lastDamages = new ConcurrentHashMap<>();
+        lastDamageExpiries = new ConcurrentHashMap<>();
     }
 
     public static EntityDamageByEntityListener getINSTANCE() {
@@ -60,45 +66,71 @@ public class EntityDamageByEntityListener extends OCMModule {
         } else {
             stopExpirySweeperIfNeeded();
             lastDamages.clear();
-            lastDamageExpiryTicks.clear();
+            lastDamageExpiries.clear();
         }
     }
 
-    private void startExpirySweeperIfNeeded() {
-        if (expirySweepTaskId != -1) return;
-        expirySweepTaskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, () -> {
-            tickCounter++;
-            if (tickCounter % EXPIRY_SWEEP_INTERVAL_TICKS != 0) return;
-            sweepExpiredEntries();
-        }, 1L, 1L);
+    private synchronized void startExpirySweeperIfNeeded() {
+        if (expirySweepTask != null) return;
+        expirySweepTask = OCMScheduler.runGlobalAtFixedRate(this::sweepExpiredEntries,
+                EXPIRY_SWEEP_INTERVAL_TICKS, EXPIRY_SWEEP_INTERVAL_TICKS);
     }
 
-    private void stopExpirySweeperIfNeeded() {
-        if (expirySweepTaskId == -1) return;
-        Bukkit.getScheduler().cancelTask(expirySweepTaskId);
-        expirySweepTaskId = -1;
+    private synchronized void stopExpirySweeperIfNeeded() {
+        final TaskHandle task = expirySweepTask;
+        if (task == null) return;
+        task.cancel();
+        expirySweepTask = null;
     }
 
-    private void touchExpiry(LivingEntity damagee) {
-        final UUID uuid = damagee.getUniqueId();
+    /** Stores the damage and extends its expiry, counted in the damaged entity's own ticks. */
+    private void storeLastDamage(LivingEntity damagee, double damage) {
         // Some implementations / test setups set maximumNoDamageTicks to 0, but damage immunity bookkeeping can
         // still matter for a short period (e.g. cancelled fire ticks during invulnerability). Keep a small minimum.
         final long delayTicks = Math.max(MIN_LAST_DAMAGE_TTL_TICKS, damagee.getMaximumNoDamageTicks());
-        final long candidateExpiry = tickCounter + delayTicks;
-        final Long existingExpiry = lastDamageExpiryTicks.get(uuid);
-        if (existingExpiry == null || candidateExpiry > existingExpiry) {
-            lastDamageExpiryTicks.put(uuid, candidateExpiry);
-        }
+        final long nowTicks = damagee.getTicksLived();
+        final long candidateExpiry = nowTicks + delayTicks;
+        lastDamageExpiries.compute(damagee.getUniqueId(), (uuid, existing) -> {
+            lastDamages.put(uuid, damage);
+            if (existing != null && !existing.isReset(nowTicks) && candidateExpiry <= existing.expiryTicks) {
+                return existing;
+            }
+            final long sweepAfterNanos = Math.max(MIN_SWEEP_AGE_NANOS, 4L * delayTicks * NANOS_PER_TICK);
+            return new Expiry(nowTicks, candidateExpiry, System.nanoTime() + sweepAfterNanos);
+        });
     }
 
     private void sweepExpiredEntries() {
-        final Iterator<Map.Entry<UUID, Long>> it = lastDamageExpiryTicks.entrySet().iterator();
-        while (it.hasNext()) {
-            final Map.Entry<UUID, Long> entry = it.next();
-            if (entry.getValue() > tickCounter) continue;
-            final UUID uuid = entry.getKey();
-            it.remove();
-            lastDamages.remove(uuid);
+        final long now = System.nanoTime();
+        for (Map.Entry<UUID, Expiry> entry : lastDamageExpiries.entrySet()) {
+            if (now - entry.getValue().sweepAtNanos < 0) continue;
+            final Expiry judged = entry.getValue();
+            lastDamageExpiries.computeIfPresent(entry.getKey(), (uuid, current) -> {
+                if (current != judged) return current;
+                lastDamages.remove(uuid);
+                return null;
+            });
+        }
+    }
+
+    private static final class Expiry {
+        private final long createdTicks;
+        private final long expiryTicks;
+        private final long sweepAtNanos;
+
+        private Expiry(long createdTicks, long expiryTicks, long sweepAtNanos) {
+            this.createdTicks = createdTicks;
+            this.expiryTicks = expiryTicks;
+            this.sweepAtNanos = sweepAtNanos;
+        }
+
+        // Old CraftBukkit recreates a player on respawn, which restarts its tick count.
+        private boolean isReset(long nowTicks) {
+            return nowTicks < createdTicks;
+        }
+
+        private boolean isExpired(long nowTicks) {
+            return isReset(nowTicks) || expiryTicks <= nowTicks;
         }
     }
 
@@ -264,20 +296,21 @@ public class EntityDamageByEntityListener extends OCMModule {
         final Entity damagee = event.getEntity();
 
         if (event instanceof EntityDamageByEntityEvent) {
-            if (damagee instanceof LivingEntity && lastDamages.containsKey(damagee.getUniqueId())) {
+            // Expired entries count as absent, as they did once the per-tick sweep had removed them.
+            if (damagee instanceof LivingEntity && resolveStoredDamage((LivingEntity) damagee) != null) {
                 // Set last damage to 0, so we can detect attacks even by weapons with a weaker attack value than what OCM would calculate
-                Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                OCMScheduler.runEntityDelayed(damagee, () -> {
                     ((LivingEntity) damagee).setLastDamage(0);
                     debug("Set last damage to 0", damagee);
                     debug("Set last damage to 0");
-                }, 1L);
+                }, null, 1L);
             }
         } else {
             // if not EDBYE then we leave last damage as is
             if (damagee instanceof LivingEntity) {
                 final LivingEntity livingDamagee = (LivingEntity) damagee;
                 if ((float) livingDamagee.getNoDamageTicks() > (float) livingDamagee.getMaximumNoDamageTicks() / 2.0F
-                        && lastDamages.containsKey(livingDamagee.getUniqueId())) {
+                        && resolveStoredDamage(livingDamagee) != null) {
                     debug("Non-entity damage inside invulnerability window, keeping stored last damage", livingDamagee);
                     debug("Non-entity damage inside invulnerability window, keeping stored last damage");
                     return;
@@ -299,8 +332,7 @@ public class EntityDamageByEntityListener extends OCMModule {
         if (lastStoredDamage != null) {
             final LivingEntity livingDamagee = damagee;
             livingDamagee.setLastDamage(lastStoredDamage);
-            lastDamages.put(livingDamagee.getUniqueId(), lastStoredDamage);
-            touchExpiry(livingDamagee);
+            storeLastDamage(livingDamagee, lastStoredDamage);
             debug("Set last damage back to " + lastStoredDamage, livingDamagee);
             debug("Set last damage back to " + lastStoredDamage);
         } else {
@@ -345,8 +377,7 @@ public class EntityDamageByEntityListener extends OCMModule {
                 debug("Was fake overdamage, cancelling " + newDamage + " <= " + lastDamage);
                 // Do not overwrite the stored baseline with this cancelled damage (e.g. fire tick),
                 // otherwise the next attack can incorrectly bypass immunity.
-                lastDamages.put(livingDamagee.getUniqueId(), lastDamage);
-                touchExpiry(livingDamagee);
+                storeLastDamage(livingDamagee, lastDamage);
                 return 0;
             }
 
@@ -360,34 +391,39 @@ public class EntityDamageByEntityListener extends OCMModule {
         }
         // Update the last damage done, including when it was overdamage.
         // This means attacks must keep increasing in value during immunity period to keep dealing overdamage.
-        lastDamages.put(livingDamagee.getUniqueId(), newLastDamage);
-        touchExpiry(livingDamagee);
+        storeLastDamage(livingDamagee, newLastDamage);
 
         return newDamage;
     }
 
     private Double resolveStoredDamage(LivingEntity damagee) {
         final UUID uuid = damagee.getUniqueId();
-        final Long expiresAtTick = lastDamageExpiryTicks.get(uuid);
-        if (expiresAtTick != null && expiresAtTick <= tickCounter) {
-            lastDamageExpiryTicks.remove(uuid);
-            lastDamages.remove(uuid);
+        final Expiry expiry = lastDamageExpiries.get(uuid);
+        if (expiry != null && expiry.isExpired(damagee.getTicksLived())) {
+            lastDamageExpiries.computeIfPresent(uuid, (key, current) -> {
+                if (current != expiry) return current;
+                lastDamages.remove(key);
+                return null;
+            });
             return null;
         }
         return lastDamages.get(uuid);
     }
 
     private void clearStoredDamage(LivingEntity damagee) {
-        final UUID uuid = damagee.getUniqueId();
-        lastDamageExpiryTicks.remove(uuid);
-        lastDamages.remove(uuid);
+        lastDamageExpiries.compute(damagee.getUniqueId(), (uuid, current) -> {
+            lastDamages.remove(uuid);
+            return null;
+        });
     }
 
     private boolean damageSourceBypassesCooldown(EntityDamageEvent event) {
-        if (damageSourceCooldownBypassSupport == null) {
-            damageSourceCooldownBypassSupport = DamageSourceCooldownBypassSupport.create();
+        DamageSourceCooldownBypassSupport support = damageSourceCooldownBypassSupport;
+        if (support == null) {
+            support = DamageSourceCooldownBypassSupport.create();
+            damageSourceCooldownBypassSupport = support;
         }
-        return damageSourceCooldownBypassSupport.isBypassed(event);
+        return support.isBypassed(event);
     }
 
     private static final class DamageSourceCooldownBypassSupport {
