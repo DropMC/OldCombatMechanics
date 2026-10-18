@@ -97,6 +97,8 @@ public class ModesetListener extends OCMModule {
     @EventHandler(priority = EventPriority.LOWEST)
     public void onPlayerJoin(PlayerJoinEvent event) {
         final Player player = event.getPlayer();
+        // Overrides last one session. An API write from another thread can land after the quit cleanup; drop it here.
+        PlayerModuleOverrides.clearAll(player);
         updateModeset(player, player.getWorld(), null, PlayerModesetChangeEvent.Reason.JOIN);
     }
 

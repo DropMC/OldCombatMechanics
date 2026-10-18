@@ -30,7 +30,10 @@ object PlayerModuleOverrides {
             clearOverride(human, normalised)
             return
         }
-        overridesByPlayer.computeIfAbsent(human.uniqueId) { ConcurrentHashMap() }[normalised] = state
+        // Atomic per player, so a concurrent clearOverride cannot drop the map this write lands in.
+        overridesByPlayer.compute(human.uniqueId) { _, existing ->
+            (existing ?: ConcurrentHashMap()).also { it[normalised] = state }
+        }
     }
 
     @JvmStatic
@@ -60,9 +63,12 @@ object PlayerModuleOverrides {
         moduleName: String,
     ): Boolean {
         requireOnline(human)
-        val perPlayer = overridesByPlayer[human.uniqueId] ?: return false
-        val removed = perPlayer.remove(ModuleLoader.normaliseModuleName(moduleName))
-        if (perPlayer.isEmpty()) overridesByPlayer.remove(human.uniqueId)
+        val normalised = ModuleLoader.normaliseModuleName(moduleName)
+        var removed: PlayerModuleOverride? = null
+        overridesByPlayer.computeIfPresent(human.uniqueId) { _, perPlayer ->
+            removed = perPlayer.remove(normalised)
+            if (perPlayer.isEmpty()) null else perPlayer
+        }
         return removed != null
     }
 
