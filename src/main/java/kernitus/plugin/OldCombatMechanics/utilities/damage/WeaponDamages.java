@@ -16,7 +16,7 @@ import java.util.Map;
 
 public class WeaponDamages {
 
-    private static Map<String, Double> damages;
+    private static volatile Map<String, Double> damages;
 
     private static OCMMain plugin;
 

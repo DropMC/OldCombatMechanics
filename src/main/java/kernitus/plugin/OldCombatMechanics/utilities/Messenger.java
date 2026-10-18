@@ -17,8 +17,8 @@ public class Messenger {
     public static final String HORIZONTAL_BAR = ChatColor.STRIKETHROUGH + "----------------------------------------------------";
     private static OCMMain plugin;
 
-    private static boolean DEBUG_ENABLED = false;
-    private static String PREFIX = "&6[OCM]&r";
+    private static volatile boolean DEBUG_ENABLED = false;
+    private static volatile String PREFIX = "&6[OCM]&r";
 
     public static void initialise(OCMMain plugin) {
         Messenger.plugin = plugin;

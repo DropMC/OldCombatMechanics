@@ -19,6 +19,7 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import javax.annotation.Nullable;
 import java.io.InputStreamReader;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -27,11 +28,13 @@ public class Config {
     private static final String CONFIG_NAME = "config.yml";
     private static final String DEFAULT_WORLD_KEY = "__default__";
     private static OCMMain plugin;
-    private static FileConfiguration config;
-    private static final Map<String, Set<String>> modesets = new LinkedHashMap<>();
-    private static final Map<UUID, Set<String>> worlds = new HashMap<>();
-    private static final Set<String> alwaysEnabledModules = new HashSet<>();
-    private static final Set<String> disabledModules = new HashSet<>();
+    // Read by isEnabled from every thread. Reload builds new collections and swaps them in, never edits them in place.
+    private static volatile FileConfiguration config;
+    private static volatile Map<String, Set<String>> modesets = new LinkedHashMap<>();
+    private static volatile Map<UUID, Set<String>> worlds = new ConcurrentHashMap<>();
+    private static volatile Set<String> alwaysEnabledModules = ConcurrentHashMap.newKeySet();
+    private static volatile Set<String> disabledModules = ConcurrentHashMap.newKeySet();
+    private static final Object WORLDS_LOCK = new Object();
     private static final Set<String> optionalModules = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
             "disable-attack-sounds",
             "disable-sword-sweep-particles"
@@ -108,9 +111,21 @@ public class Config {
     }
 
     private static void reloadModesets() {
-        modesets.clear();
-        alwaysEnabledModules.clear();
-        disabledModules.clear();
+        final Map<String, Set<String>> modesets = new LinkedHashMap<>();
+        final Set<String> alwaysEnabledModules = ConcurrentHashMap.newKeySet();
+        final Set<String> disabledModules = ConcurrentHashMap.newKeySet();
+        try {
+            loadModesets(modesets, alwaysEnabledModules, disabledModules);
+        } finally {
+            // Published even when the assignment is invalid, as the in-place edits used to leave it.
+            Config.modesets = modesets;
+            Config.alwaysEnabledModules = alwaysEnabledModules;
+            Config.disabledModules = disabledModules;
+        }
+    }
+
+    private static void loadModesets(Map<String, Set<String>> modesets, Set<String> alwaysEnabledModules,
+                                     Set<String> disabledModules) {
 
         final Set<String> moduleNames = ModuleLoader.getModules().stream()
                 .map(OCMModule::getConfigName)
@@ -221,8 +236,14 @@ public class Config {
     }
 
     private static void reloadWorlds() {
-        worlds.clear();
+        synchronized (WORLDS_LOCK) {
+            final Map<UUID, Set<String>> worlds = new ConcurrentHashMap<>();
+            loadWorlds(worlds);
+            Config.worlds = worlds;
+        }
+    }
 
+    private static void loadWorlds(Map<UUID, Set<String>> worlds) {
         final ConfigurationSection worldsSection = config.getConfigurationSection("worlds");
         if (worldsSection == null) return;
 
@@ -235,13 +256,13 @@ public class Config {
                 Messenger.warn("Configured world " + worldName + " not found, skipping (might be loaded later?)...");
                 continue;
             }
-            addWorld(world, worldsSection);
+            putWorld(worlds, world, worldsSection);
         }
 
         if (worldsSection.isSet(DEFAULT_WORLD_KEY)) {
             for (World world : Bukkit.getWorlds()) {
                 if (!worlds.containsKey(world.getUID())) {
-                    addWorld(world, worldsSection);
+                    putWorld(worlds, world, worldsSection);
                 }
             }
         }
@@ -254,7 +275,12 @@ public class Config {
 
     public static void addWorld(World world, ConfigurationSection worldsSection) {
         if (worldsSection == null) return;
+        synchronized (WORLDS_LOCK) {
+            putWorld(worlds, world, worldsSection);
+        }
+    }
 
+    private static void putWorld(Map<UUID, Set<String>> worlds, World world, ConfigurationSection worldsSection) {
         final String worldKey = worldsSection.isSet(world.getName()) ? world.getName() : DEFAULT_WORLD_KEY;
         if (!worldsSection.isSet(worldKey)) return;
 
@@ -289,7 +315,9 @@ public class Config {
     }
 
     public static void removeWorld(World world){
-        worlds.remove(world.getUID());
+        synchronized (WORLDS_LOCK) {
+            worlds.remove(world.getUID());
+        }
     }
 
     /**
@@ -298,16 +326,15 @@ public class Config {
      * @return The default modeset, if found. Otherwise null.
      */
     public static @Nullable Set<String> getDefaultModeset(UUID worldId){
-        if(!worlds.containsKey(worldId)) return null;
-
         final Set<String> set = worlds.get(worldId);
         if(set == null || set.isEmpty()) return null;
 
         final Iterator<String> iterator = set.iterator();
         if(iterator.hasNext()) {
             final String modesetName = iterator.next();
-            if(modesets.containsKey(modesetName)){
-                return modesets.get(modesetName);
+            final Set<String> modeset = modesets.get(modesetName);
+            if(modeset != null){
+                return modeset;
             }
         }
 

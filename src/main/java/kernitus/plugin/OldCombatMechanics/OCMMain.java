@@ -26,6 +26,8 @@ import org.bstats.bukkit.Metrics;
 import org.bstats.charts.SimpleBarChart;
 import org.bstats.charts.SimplePie;
 import org.bukkit.Bukkit;
+import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.HumanEntity;
 import org.bukkit.event.EventException;
 import org.bukkit.event.player.PlayerJoinEvent;
@@ -39,6 +41,8 @@ import org.jetbrains.annotations.NotNull;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -58,6 +62,8 @@ public class OCMMain extends JavaPlugin {
     private final List<Runnable> enableListeners = new ArrayList<>();
     private final List<Hook> hooks = new ArrayList<>();
     private OldCombatMechanicsAPI api;
+    // Read from region, Netty and async threads: publish a fully built tree, defaults included.
+    private volatile FileConfiguration config;
     public OCMMain() {
         super();
     }
@@ -276,6 +282,29 @@ public class OCMMain extends JavaPlugin {
     private void registerHooks() {
         if (getServer().getPluginManager().isPluginEnabled("PlaceholderAPI"))
             hooks.add(new PlaceholderAPIHook());
+    }
+
+    @NotNull
+    @Override
+    public FileConfiguration getConfig() {
+        FileConfiguration current = config;
+        if (current == null) {
+            synchronized (this) {
+                if (config == null) reloadConfig();
+                current = config;
+            }
+        }
+        return current;
+    }
+
+    @Override
+    public void reloadConfig() {
+        final YamlConfiguration loaded = YamlConfiguration.loadConfiguration(new File(getDataFolder(), "config.yml"));
+        final InputStream defaults = getResource("config.yml");
+        if (defaults != null) {
+            loaded.setDefaults(YamlConfiguration.loadConfiguration(new InputStreamReader(defaults, StandardCharsets.UTF_8)));
+        }
+        config = loaded;
     }
 
     public void upgradeConfig() {
