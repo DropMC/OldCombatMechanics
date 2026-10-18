@@ -83,10 +83,10 @@ public class ModulePlayerKnockback extends OCMModule {
     // break other plugins
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onPlayerVelocityEvent(PlayerVelocityEvent event) {
-        final UUID uuid = event.getPlayer().getUniqueId();
-        final PendingKnockback pending = pendingKnockback.remove(uuid);
-        if (pending == null || !pending.isValidAt(TickClock.ownerTick())) return;
-        if (mythicMobsKnockbackBridge.consumeNoKnockback(uuid, pending.sourceId)) {
+        final Player player = event.getPlayer();
+        final PendingKnockback pending = pendingKnockback.remove(player.getUniqueId());
+        if (pending == null || !pending.isValidFor(player)) return;
+        if (mythicMobsKnockbackBridge.consumeNoKnockback(player, pending.sourceId)) {
             return;
         }
         event.setVelocity(pending.velocity);
@@ -204,39 +204,48 @@ public class ModulePlayerKnockback extends OCMModule {
         }
 
         final UUID victimId = victim.getUniqueId();
-        if (mythicMobsKnockbackBridge.consumeNoKnockback(victimId, attacker.getUniqueId())) {
+        if (mythicMobsKnockbackBridge.consumeNoKnockback(victim, attacker.getUniqueId())) {
             return;
         }
 
         // Knockback is sent immediately in 1.8+, there is no reason to send packets
         // manually
-        final long tick = TickClock.ownerTick();
-        pendingKnockback.put(victimId, new PendingKnockback(playerVelocity, attacker.getUniqueId(), tick, tick));
+        pendingKnockback.put(victimId, new PendingKnockback(playerVelocity, attacker.getUniqueId(),
+                TickClock.ownerTick(), victim.getTicksLived()));
     }
 
     private static final class PendingKnockback {
+        private static final long NO_TICK = Long.MIN_VALUE;
         private final Vector velocity;
         private final UUID sourceId;
-        // Valid from createdAtTick to expiresAtTick inclusive, on the victim's clock. Both bounds matter on Folia,
-        // where moving to another region can move the clock backwards.
+        // Valid in the victim's tick it was created in. NO_TICK marks an injected entry valid up to expiresAtTick.
         private final long createdAtTick;
+        private final int createdTicksLived;
         private final long expiresAtTick;
 
         // Integration tests inject entries with this shape.
         private PendingKnockback(Vector velocity, UUID sourceId, long expiresAtTick) {
-            this(velocity, sourceId, Long.MIN_VALUE, expiresAtTick);
+            this(velocity, sourceId, NO_TICK, 0, expiresAtTick);
         }
 
-        private PendingKnockback(Vector velocity, UUID sourceId, long createdAtTick, long expiresAtTick) {
+        private PendingKnockback(Vector velocity, UUID sourceId, long createdAtTick, int createdTicksLived) {
+            this(velocity, sourceId, createdAtTick, createdTicksLived, createdAtTick);
+        }
+
+        private PendingKnockback(Vector velocity, UUID sourceId, long createdAtTick, int createdTicksLived,
+                                 long expiresAtTick) {
             // Defensive clone: callers may re-use/mutate the Vector instance.
             this.velocity = velocity == null ? new Vector() : velocity.clone();
             this.sourceId = sourceId;
             this.createdAtTick = createdAtTick;
+            this.createdTicksLived = createdTicksLived;
             this.expiresAtTick = expiresAtTick;
         }
 
-        private boolean isValidAt(long tick) {
-            return tick >= createdAtTick && tick <= expiresAtTick;
+        // Called on the victim's thread.
+        private boolean isValidFor(Player victim) {
+            if (createdAtTick == NO_TICK) return TickClock.ownerTick() <= expiresAtTick;
+            return TickClock.isWithin(victim, createdAtTick, createdTicksLived, 1);
         }
     }
 }

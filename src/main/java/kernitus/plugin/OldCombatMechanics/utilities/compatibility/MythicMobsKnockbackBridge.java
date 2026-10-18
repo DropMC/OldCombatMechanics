@@ -9,6 +9,7 @@ import kernitus.plugin.OldCombatMechanics.OCMMain;
 import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
 import kernitus.plugin.OldCombatMechanics.utilities.scheduling.TickClock;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.Player;
 import org.bukkit.event.Event;
 import org.bukkit.event.EventException;
 import org.bukkit.event.EventPriority;
@@ -42,7 +43,7 @@ public final class MythicMobsKnockbackBridge {
     private static final String[] KNOCKBACK_KEYS =
             {"preventsKnockback", "preventsknockback", "preventKnockback", "preventknockback"};
     // A marker lasts for the tick it was created in and the next one.
-    private static final long MARKER_TICKS = 2L;
+    private static final int MARKER_TICKS = 2;
     // Folia only: a marker set from a thread that does not own the target cannot read the target's clock.
     private static final long OFF_OWNER_MARKER_NANOS = TimeUnit.MILLISECONDS.toNanos(100L);
     // Memory only: markers never consumed (mobs) are pruned once they are this old.
@@ -73,16 +74,17 @@ public final class MythicMobsKnockbackBridge {
     /**
      * Consumes a one-shot no-knockback marker for the supplied target and optional source.
      *
-     * @param targetId target entity UUID
+     * @param target   target player, on its own thread
      * @param sourceId source entity UUID, or {@code null} if the source cannot be mapped cleanly
      * @return true when OCM knockback should be suppressed
      */
-    public boolean consumeNoKnockback(UUID targetId, UUID sourceId) {
-        if (targetId == null) return false;
+    public boolean consumeNoKnockback(Player target, UUID sourceId) {
+        if (target == null) return false;
 
+        final UUID targetId = target.getUniqueId();
         final NoKnockbackMarker marker = markers.get(targetId);
         if (marker == null) return false;
-        if (!marker.isValid()) {
+        if (!marker.isValidFor(target)) {
             markers.remove(targetId, marker);
             return false;
         }
@@ -278,8 +280,8 @@ public final class MythicMobsKnockbackBridge {
     private void markNoKnockback(Entity target, UUID sourceId) {
         final long now = System.nanoTime();
         final NoKnockbackMarker marker = OCMScheduler.isOwnedByCurrentRegion(target)
-                ? new NoKnockbackMarker(sourceId, TickClock.ownerTick(), now, Long.MAX_VALUE)
-                : new NoKnockbackMarker(sourceId, Long.MIN_VALUE, now, now + OFF_OWNER_MARKER_NANOS);
+                ? new NoKnockbackMarker(sourceId, TickClock.ownerTick(), target.getTicksLived(), now, Long.MAX_VALUE)
+                : new NoKnockbackMarker(sourceId, Long.MIN_VALUE, 0, now, now + OFF_OWNER_MARKER_NANOS);
         markers.put(target.getUniqueId(), marker);
         if (markers.size() > PRUNE_THRESHOLD) pruneOldMarkers(now);
     }
@@ -388,21 +390,23 @@ public final class MythicMobsKnockbackBridge {
         private final UUID sourceId;
         // Long.MIN_VALUE when the marker was set off the target's thread and uses the wall-clock deadline instead.
         private final long createdAtTick;
+        private final int createdTicksLived;
         private final long createdAtNanos;
         private final long deadlineNanos;
 
-        private NoKnockbackMarker(UUID sourceId, long createdAtTick, long createdAtNanos, long deadlineNanos) {
+        private NoKnockbackMarker(UUID sourceId, long createdAtTick, int createdTicksLived, long createdAtNanos,
+                                  long deadlineNanos) {
             this.sourceId = sourceId;
             this.createdAtTick = createdAtTick;
+            this.createdTicksLived = createdTicksLived;
             this.createdAtNanos = createdAtNanos;
             this.deadlineNanos = deadlineNanos;
         }
 
         // Called on the target's thread.
-        private boolean isValid() {
+        private boolean isValidFor(Player target) {
             if (createdAtTick == Long.MIN_VALUE) return System.nanoTime() - deadlineNanos < 0;
-            final long age = TickClock.ownerTick() - createdAtTick;
-            return age >= 0 && age < MARKER_TICKS;
+            return TickClock.isWithin(target, createdAtTick, createdTicksLived, MARKER_TICKS);
         }
     }
 }

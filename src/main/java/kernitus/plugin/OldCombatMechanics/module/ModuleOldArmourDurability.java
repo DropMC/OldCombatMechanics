@@ -56,7 +56,7 @@ public class ModuleOldArmourDurability extends OCMModule {
 
         final UUID uuid = player.getUniqueId();
         final ExplosionDamagedArmour data = explosionDamaged.get(uuid);
-        if (data != null && data.createdAtTick != TickClock.ownerTick()) {
+        if (data != null && !TickClock.isWithin(player, data.createdAtTick, data.createdTicksLived, 1)) {
             explosionDamaged.remove(uuid, data);
         } else if (data != null) {
             final List<ItemStack> armour = data.armour;
@@ -94,7 +94,7 @@ public class ModuleOldArmourDurability extends OCMModule {
         final Player player = (Player) e.getEntity();
         final UUID uuid = player.getUniqueId();
         final List<ItemStack> armour = Arrays.stream(player.getInventory().getArmorContents()).filter(Objects::nonNull).collect(Collectors.toList());
-        explosionDamaged.put(uuid, new ExplosionDamagedArmour(armour, TickClock.ownerTick()));
+        explosionDamaged.put(uuid, new ExplosionDamagedArmour(armour, TickClock.ownerTick(), player.getTicksLived()));
 
         debug("Detected explosion!", player);
     }
@@ -107,10 +107,12 @@ public class ModuleOldArmourDurability extends OCMModule {
     private static final class ExplosionDamagedArmour {
         private final List<ItemStack> armour;
         private final long createdAtTick;
+        private final int createdTicksLived;
 
-        private ExplosionDamagedArmour(List<ItemStack> armour, long createdAtTick) {
+        private ExplosionDamagedArmour(List<ItemStack> armour, long createdAtTick, int createdTicksLived) {
             this.armour = armour;
             this.createdAtTick = createdAtTick;
+            this.createdTicksLived = createdTicksLived;
         }
     }
 }

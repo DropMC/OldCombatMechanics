@@ -359,6 +359,24 @@ object TickClock {
         val handle = currentTick ?: return fallbackTick
         return (handle.invokeExact() as Int).toLong()
     }
+
+    /**
+     * True while the owner's clock is less than [window] ticks past [createdTick], read on [entity]'s thread. Folia
+     * regions count ticks separately, so an entity that changed region can see [createdTick] again later: its own
+     * tick count, taken as [createdTicksLived] with the stamp, must also have advanced by at most [window].
+     */
+    @JvmStatic
+    fun isWithin(
+        entity: Entity,
+        createdTick: Long,
+        createdTicksLived: Int,
+        window: Int,
+    ): Boolean {
+        val age = ownerTick() - createdTick
+        if (age < 0 || age >= window) return false
+        val lived = entity.ticksLived - createdTicksLived
+        return lived in 0..window
+    }
 }
 
 class BukkitTaskHandle : TaskHandle {

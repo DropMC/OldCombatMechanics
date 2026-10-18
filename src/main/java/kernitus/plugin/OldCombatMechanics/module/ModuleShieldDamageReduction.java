@@ -62,7 +62,7 @@ public class ModuleShieldDamageReduction extends OCMModule {
         final ItemStack item = e.getItem();
 
         final FullyBlockedArmour data = fullyBlocked.get(uuid);
-        if (data != null && data.createdAtTick != TickClock.ownerTick()) {
+        if (data != null && !TickClock.isWithin(player, data.createdAtTick, data.createdTicksLived, 1)) {
             fullyBlocked.remove(uuid, data);
         } else if (data != null) {
             final List<ItemStack> armour = data.armour;
@@ -109,7 +109,7 @@ public class ModuleShieldDamageReduction extends OCMModule {
 
         if (currentDamage <= 0) { // Make sure armour is not damaged if fully blocked
             final List<ItemStack> armour = Arrays.stream(player.getInventory().getArmorContents()).filter(Objects::nonNull).collect(Collectors.toList());
-            fullyBlocked.put(uuid, new FullyBlockedArmour(armour, TickClock.ownerTick()));
+            fullyBlocked.put(uuid, new FullyBlockedArmour(armour, TickClock.ownerTick(), player.getTicksLived()));
         }
     }
 
@@ -125,10 +125,12 @@ public class ModuleShieldDamageReduction extends OCMModule {
     private static final class FullyBlockedArmour {
         private final List<ItemStack> armour;
         private final long createdAtTick;
+        private final int createdTicksLived;
 
-        private FullyBlockedArmour(List<ItemStack> armour, long createdAtTick) {
+        private FullyBlockedArmour(List<ItemStack> armour, long createdAtTick, int createdTicksLived) {
             this.armour = armour;
             this.createdAtTick = createdAtTick;
+            this.createdTicksLived = createdTicksLived;
         }
     }
 
