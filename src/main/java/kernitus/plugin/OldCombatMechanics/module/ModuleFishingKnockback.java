@@ -6,6 +6,7 @@
 package kernitus.plugin.OldCombatMechanics.module;
 
 import kernitus.plugin.OldCombatMechanics.OCMMain;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
 import com.cryptomorin.xseries.XEntityType;
 import kernitus.plugin.OldCombatMechanics.utilities.reflection.SpigotFunctionChooser;
 import org.bukkit.GameMode;
@@ -24,7 +25,7 @@ public class ModuleFishingKnockback extends OCMModule {
 
     private final SpigotFunctionChooser<PlayerFishEvent, Object, Entity> getHookFunction;
     private final SpigotFunctionChooser<ProjectileHitEvent, Object, Entity> getHitEntityFunction;
-    private boolean knockbackNonPlayerEntities;
+    private volatile boolean knockbackNonPlayerEntities;
 
     public ModuleFishingKnockback(OCMMain plugin) {
         super(plugin, "old-fishing-knockback");
@@ -55,6 +56,9 @@ public class ModuleFishingKnockback extends OCMModule {
         if (!(hook.getShooter() instanceof Player))
             return;
         final Player rodder = (Player) hook.getShooter();
+        // Folia discards a bobber whose rodder is ticked elsewhere; the rodder cannot be used from here.
+        if (!OCMScheduler.isOwnedByCurrentRegion(rodder))
+            return;
         if (!isEnabled(rodder))
             return;
 

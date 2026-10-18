@@ -8,7 +8,7 @@ package kernitus.plugin.OldCombatMechanics.module;
 import kernitus.plugin.OldCombatMechanics.OCMMain;
 import kernitus.plugin.OldCombatMechanics.utilities.CompatibilityCapabilities;
 import kernitus.plugin.OldCombatMechanics.utilities.MathsHelper;
-import org.bukkit.Bukkit;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -49,7 +49,7 @@ public class ModuleChorusFruit extends OCMModule {
 
         // Run it on the next tick to reset things while not cancelling the chorus fruit eat event
         // This ensures the teleport event is fired and counts towards statistics
-        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+        OCMScheduler.runEntityDelayed(player, () -> {
             final int newFoodLevel = Math.min(hungerValue + previousFoodLevel, 20);
             final float newSaturation = Math.min((float) (saturationValue + previousSaturation), newFoodLevel);
 
@@ -57,7 +57,7 @@ public class ModuleChorusFruit extends OCMModule {
             player.setSaturation(newSaturation);
 
             debug("Food level changed from: " + previousFoodLevel + " to " + player.getFoodLevel(), player);
-        }, 2L);
+        }, null, 2L);
     }
 
     @EventHandler
@@ -104,6 +104,8 @@ public class ModuleChorusFruit extends OCMModule {
             final Location candidate = new Location(world, x, y, z);
 
             if (!world.getWorldBorder().isInside(candidate)) continue;
+            // On Folia a candidate in another region cannot be read from here: count it as a failed attempt.
+            if (!OCMScheduler.isOwnedByCurrentRegion(candidate)) continue;
             if (!isSafe(candidate)) continue;
 
             chosen = candidate;

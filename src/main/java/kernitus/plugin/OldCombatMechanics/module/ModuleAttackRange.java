@@ -7,6 +7,7 @@ package kernitus.plugin.OldCombatMechanics.module;
 
 import kernitus.plugin.OldCombatMechanics.OCMMain;
 import kernitus.plugin.OldCombatMechanics.utilities.Messenger;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
@@ -38,12 +39,12 @@ public class ModuleAttackRange extends OCMModule implements Listener {
     private static final String[] WEAPONS = {"sword", "axe", "pickaxe", "spade", "shovel", "hoe", "trident", "mace"};
 
     private boolean supported;
-    private float minRange;
-    private float maxRange;
-    private float minCreative;
-    private float maxCreative;
-    private float hitboxMargin;
-    private float mobFactor;
+    private volatile float minRange;
+    private volatile float maxRange;
+    private volatile float minCreative;
+    private volatile float maxCreative;
+    private volatile float hitboxMargin;
+    private volatile float mobFactor;
 
     private PaperAttackRangeAdapter paperAdapter;
 
@@ -84,7 +85,7 @@ public class ModuleAttackRange extends OCMModule implements Listener {
         mobFactor = (float) module().getDouble("mob-factor", 1.0);
 
         // Apply to currently online players so config changes take effect immediately
-        Bukkit.getOnlinePlayers().forEach(this::applyToHeld);
+        OCMScheduler.forEachOnlinePlayer(this::applyToHeld);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -122,7 +123,7 @@ public class ModuleAttackRange extends OCMModule implements Listener {
     private void reconcileSwapInventory(Player player) {
         if (!supported) return;
 
-        Bukkit.getScheduler().runTask(plugin, () -> {
+        OCMScheduler.runEntityDelayed(player, () -> {
             if (!player.isOnline()) return;
 
             ItemStack mainHand = player.getInventory().getItemInMainHand();
@@ -131,7 +132,7 @@ public class ModuleAttackRange extends OCMModule implements Listener {
             stripComponent(mainHand);
             stripComponent(offHand);
             applyToItem(player, mainHand);
-        });
+        }, null, 1L);
     }
 
     private void applyToHeld(Player player) {

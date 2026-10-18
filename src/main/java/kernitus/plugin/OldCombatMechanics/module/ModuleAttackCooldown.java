@@ -7,8 +7,8 @@ package kernitus.plugin.OldCombatMechanics.module;
 
 import com.cryptomorin.xseries.XAttribute;
 import kernitus.plugin.OldCombatMechanics.OCMMain;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
 import kernitus.plugin.OldCombatMechanics.utilities.ConfigUtils;
-import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.attribute.Attribute;
 import org.bukkit.attribute.AttributeInstance;
@@ -34,8 +34,8 @@ public class ModuleAttackCooldown extends OCMModule {
 
     private static final double VANILLA_ATTACK_SPEED = 4.0;
 
-    private double genericAttackSpeed = 40.0;
-    private Map<Material, Double> heldItemAttackSpeeds = Collections.emptyMap();
+    private volatile double genericAttackSpeed = 40.0;
+    private volatile Map<Material, Double> heldItemAttackSpeeds = Collections.emptyMap();
 
     public ModuleAttackCooldown(OCMMain plugin) {
         super(plugin, "disable-attack-cooldown");
@@ -44,13 +44,11 @@ public class ModuleAttackCooldown extends OCMModule {
     @Override
     public void reload() {
         genericAttackSpeed = module().getDouble("generic-attack-speed", 40.0);
-        heldItemAttackSpeeds = Collections.emptyMap();
+        heldItemAttackSpeeds = module().isConfigurationSection("held-item-attack-speeds")
+                ? ConfigUtils.loadMaterialDoubleMap(module().getConfigurationSection("held-item-attack-speeds"))
+                : Collections.emptyMap();
 
-        if (module().isConfigurationSection("held-item-attack-speeds")) {
-            heldItemAttackSpeeds = ConfigUtils.loadMaterialDoubleMap(module().getConfigurationSection("held-item-attack-speeds"));
-        }
-
-        Bukkit.getOnlinePlayers().forEach(this::adjustAttackSpeed);
+        OCMScheduler.forEachOnlinePlayer(this::adjustAttackSpeed);
     }
 
     @EventHandler(priority = EventPriority.HIGH)

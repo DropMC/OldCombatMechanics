@@ -8,6 +8,8 @@ package kernitus.plugin.OldCombatMechanics.module;
 import kernitus.plugin.OldCombatMechanics.OCMMain;
 import com.cryptomorin.xseries.XEnchantment;
 import kernitus.plugin.OldCombatMechanics.utilities.damage.NewWeaponDamage;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.TaskHandle;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.enchantments.Enchantment;
@@ -18,11 +20,10 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.scheduler.BukkitTask;
 
-import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * A module to disable the sweep attack.
@@ -31,9 +32,9 @@ public class ModuleSwordSweep extends OCMModule {
 
     // Legacy (pre-1.11) sweep detection: we observe a normal sword hit, then a 1.0 sweep-damage hit follows
     // immediately afterwards from the same attacker. Track per-attacker, not by Location (yaw/pitch makes Location unstable).
-    private final Set<UUID> sweepPrimedAttackers = new HashSet<>();
+    private final Set<UUID> sweepPrimedAttackers = ConcurrentHashMap.newKeySet();
     private EntityDamageEvent.DamageCause sweepDamageCause;
-    private BukkitTask pendingClearTask;
+    private volatile TaskHandle pendingClearTask;
 
     public ModuleSwordSweep(OCMMain plugin) {
         super(plugin, "disable-sword-sweep");
@@ -53,8 +54,9 @@ public class ModuleSwordSweep extends OCMModule {
         // we didn't set anything up in the first place
         if (sweepDamageCause != null) return;
 
-        if (pendingClearTask != null) {
-            pendingClearTask.cancel();
+        final TaskHandle task = pendingClearTask;
+        if (task != null) {
+            task.cancel();
             pendingClearTask = null;
         }
         sweepPrimedAttackers.clear();
@@ -113,9 +115,10 @@ public class ModuleSwordSweep extends OCMModule {
         }
     }
 
-    private void scheduleClearNextTickIfNeeded() {
+    // Only reached before 1.11, where there is no region scheduler and this is a plain Bukkit task.
+    private synchronized void scheduleClearNextTickIfNeeded() {
         if (pendingClearTask != null) return;
-        pendingClearTask = Bukkit.getScheduler().runTaskLater(plugin, () -> {
+        pendingClearTask = OCMScheduler.runGlobalDelayed(() -> {
             sweepPrimedAttackers.clear();
             pendingClearTask = null;
         }, 1L);

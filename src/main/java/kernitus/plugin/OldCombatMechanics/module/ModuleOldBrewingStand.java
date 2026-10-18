@@ -6,6 +6,7 @@
 package kernitus.plugin.OldCombatMechanics.module;
 
 import kernitus.plugin.OldCombatMechanics.OCMMain;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
 import org.bukkit.Location;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
@@ -33,6 +34,15 @@ public class ModuleOldBrewingStand extends OCMModule {
         final Location location = inventory.getLocation();
         if (location == null) return;
 
+        // Another plugin may open a stand that is not in the player's region.
+        if (OCMScheduler.isOwnedByCurrentRegion(location)) {
+            refuel(location);
+        } else {
+            OCMScheduler.runAt(location, () -> refuel(location));
+        }
+    }
+
+    private static void refuel(Location location) {
         final Block block = location.getBlock();
         final BlockState blockState = block.getState();
 

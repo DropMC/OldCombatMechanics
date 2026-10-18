@@ -8,6 +8,7 @@ package kernitus.plugin.OldCombatMechanics.module;
 import com.google.common.collect.ImmutableSet;
 import kernitus.plugin.OldCombatMechanics.OCMMain;
 import kernitus.plugin.OldCombatMechanics.utilities.Messenger;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
 import com.cryptomorin.xseries.XMaterial;
 import com.cryptomorin.xseries.XPotion;
 import org.bukkit.Bukkit;
@@ -31,6 +32,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 
 /**
@@ -46,14 +48,14 @@ public class ModuleGoldenApple extends OCMModule {
     private static final Set<PotionEffectType> nappleEffects = ImmutableSet.of(PotionEffectType.ABSORPTION,
             PotionEffectType.REGENERATION, PotionEffectType.FIRE_RESISTANCE, XPotion.RESISTANCE.get());
     private static final XMaterial ENCHANTED_GOLDEN_APPLE = XMaterial.ENCHANTED_GOLDEN_APPLE;
-    private List<PotionEffect> enchantedGoldenAppleEffects, goldenAppleEffects;
+    private volatile List<PotionEffect> enchantedGoldenAppleEffects, goldenAppleEffects;
     private ShapedRecipe enchantedAppleRecipe;
-    private final Set<String> warnedUnknownEffectTypes = new HashSet<>();
+    private final Set<String> warnedUnknownEffectTypes = ConcurrentHashMap.newKeySet();
 
-    private Map<UUID, LastEaten> lastEaten;
-    private Cooldown cooldown;
+    private volatile Map<UUID, LastEaten> lastEaten;
+    private volatile Cooldown cooldown;
 
-    private String normalCooldownMessage, enchantedCooldownMessage;
+    private volatile String normalCooldownMessage, enchantedCooldownMessage;
     private static ModuleGoldenApple INSTANCE;
 
     public ModuleGoldenApple(OCMMain plugin) {
@@ -71,7 +73,7 @@ public class ModuleGoldenApple extends OCMModule {
                 module().getLong("cooldown.normal"),
                 module().getLong("cooldown.enchanted"),
                 module().getBoolean("cooldown.is-shared"));
-        lastEaten = new WeakHashMap<>();
+        lastEaten = new ConcurrentHashMap<>();
 
         enchantedGoldenAppleEffects = getPotionEffects("enchanted-golden-apple-effects");
         goldenAppleEffects = getPotionEffects("golden-apple-effects");
@@ -143,11 +145,11 @@ public class ModuleGoldenApple extends OCMModule {
         final UUID uuid = player.getUniqueId();
 
         // Check if the cooldown has expired yet
-        lastEaten.putIfAbsent(uuid, new LastEaten());
+        final LastEaten le = lastEaten.computeIfAbsent(uuid, ignored -> new LastEaten());
+        final Cooldown cooldown = this.cooldown;
 
         // If on cooldown send appropriate cooldown message
-        if (cooldown.isOnCooldown(originalItem, lastEaten.get(uuid))) {
-            final LastEaten le = lastEaten.get(uuid);
+        if (cooldown.isOnCooldown(originalItem, le)) {
 
             final long baseCooldown;
             Instant current;
@@ -176,7 +178,7 @@ public class ModuleGoldenApple extends OCMModule {
             return;
         }
 
-        lastEaten.get(uuid).setForItem(originalItem);
+        le.setForItem(originalItem);
 
         if (!isSettingEnabled("old-potion-effects"))
             return;
@@ -189,7 +191,7 @@ public class ModuleGoldenApple extends OCMModule {
         final Set<PotionEffectType> defaultEffects = isEnchantedGoldenApple(originalItem) ? nappleEffects
                 : gappleEffects;
 
-        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+        OCMScheduler.runEntityDelayed(player, () -> {
             // Remove all potion effects the apple added
             player.getActivePotionEffects().stream()
                     .map(PotionEffect::getType)
@@ -199,7 +201,7 @@ public class ModuleGoldenApple extends OCMModule {
             player.addPotionEffects(previousPotionEffects);
             // Add new custom effects from eating the apple
             applyEffects(player, newEffects);
-        }, 1L);
+        }, null, 1L);
     }
 
     private void applyEffects(LivingEntity target, List<PotionEffect> newEffects) {
@@ -283,6 +285,7 @@ public class ModuleGoldenApple extends OCMModule {
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent e) {
         final UUID uuid = e.getPlayer().getUniqueId();
+        final Map<UUID, LastEaten> lastEaten = this.lastEaten;
         if (lastEaten != null)
             lastEaten.remove(uuid);
     }
@@ -322,8 +325,8 @@ public class ModuleGoldenApple extends OCMModule {
     }
 
     private static class LastEaten {
-        private Instant lastNormalEaten;
-        private Instant lastEnchantedEaten;
+        private volatile Instant lastNormalEaten;
+        private volatile Instant lastEnchantedEaten;
 
         private Optional<Instant> getForItem(ItemStack item) {
             return ENCHANTED_GOLDEN_APPLE.isSimilar(item)

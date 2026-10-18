@@ -6,6 +6,7 @@
 package kernitus.plugin.OldCombatMechanics.module;
 
 import kernitus.plugin.OldCombatMechanics.OCMMain;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
 import kernitus.plugin.OldCombatMechanics.utilities.Messenger;
 import kernitus.plugin.OldCombatMechanics.utilities.damage.DamageUtils;
 import kernitus.plugin.OldCombatMechanics.utilities.damage.NewWeaponDamage;
@@ -40,9 +41,9 @@ public class ModuleOldToolDamage extends OCMModule {
     private static final String[] WEAPONS = {"sword", "axe", "pickaxe", "spade", "shovel", "hoe"};
     private static final Class<?> TRIDENT_CLASS;
     private static final boolean HAS_TRIDENT;
-    private boolean oldSharpness;
-    private boolean tooltipEnabled;
-    private String tooltipPrefix;
+    private volatile boolean oldSharpness;
+    private volatile boolean tooltipEnabled;
+    private volatile String tooltipPrefix;
     private final TooltipListener tooltipListener;
 
     static {
@@ -69,13 +70,11 @@ public class ModuleOldToolDamage extends OCMModule {
     public void reload() {
         oldSharpness = module().getBoolean("old-sharpness", true);
         tooltipEnabled = module().getBoolean("tooltip.enabled", false);
-        tooltipPrefix = module().getString("tooltip.prefix", "OCM Damage:");
-        if (tooltipPrefix == null || tooltipPrefix.trim().isEmpty()) {
-            tooltipPrefix = "OCM Damage:";
-        }
+        final String prefix = module().getString("tooltip.prefix", "OCM Damage:");
+        tooltipPrefix = prefix == null || prefix.trim().isEmpty() ? "OCM Damage:" : prefix;
 
         // Update online players so config changes take effect immediately
-        Bukkit.getOnlinePlayers().forEach(tooltipListener::applyToHeld);
+        OCMScheduler.forEachOnlinePlayer(tooltipListener::applyToHeld);
     }
 
     @EventHandler(ignoreCancelled = true)

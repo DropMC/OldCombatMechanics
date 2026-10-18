@@ -6,6 +6,7 @@
 package kernitus.plugin.OldCombatMechanics.module;
 
 import kernitus.plugin.OldCombatMechanics.OCMMain;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
 import kernitus.plugin.OldCombatMechanics.utilities.ConfigUtils;
 import kernitus.plugin.OldCombatMechanics.utilities.Messenger;
 import kernitus.plugin.OldCombatMechanics.utilities.damage.OCMEntityDamageByEntityEvent;
@@ -40,6 +41,7 @@ import org.bukkit.potion.PotionType;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.List;
 import java.util.Map;
 import java.lang.reflect.Method;
@@ -67,15 +69,15 @@ public class ModuleOldPotionEffects extends OCMModule {
                     "INSTANT_HEALTH"
             )));
 
-    private Map<PotionKey, PotionDurations> durations;
-    private final Set<String> warnedUnknownPotionTypes = new HashSet<>();
-    private boolean weaknessAmplifierClamped;
-    private boolean potionEffectListenerAttempted;
-    private boolean potionEffectListenerBroken;
-    private Listener potionEffectListener;
-    private Method potionEffectGetEntity;
-    private Method potionEffectGetNewEffect;
-    private Method potionEffectGetOldEffect;
+    private volatile Map<PotionKey, PotionDurations> durations;
+    private final Set<String> warnedUnknownPotionTypes = ConcurrentHashMap.newKeySet();
+    private volatile boolean weaknessAmplifierClamped;
+    private volatile boolean potionEffectListenerAttempted;
+    private volatile boolean potionEffectListenerBroken;
+    private volatile Listener potionEffectListener;
+    private volatile Method potionEffectGetEntity;
+    private volatile Method potionEffectGetNewEffect;
+    private volatile Method potionEffectGetOldEffect;
     private static final String ENTITY_POTION_EFFECT_EVENT = "org.bukkit.event.entity.EntityPotionEffectEvent";
 
     public ModuleOldPotionEffects(OCMMain plugin) {
@@ -397,9 +399,10 @@ public class ModuleOldPotionEffects extends OCMModule {
             return;
         }
 
+        // On Folia this lists entities of every region; each one is updated on its own thread.
         for (World world : plugin.getServer().getWorlds()) {
             for (LivingEntity entity : world.getLivingEntities()) {
-                applyWeaknessCompensation(entity);
+                OCMScheduler.runOn(entity, () -> applyWeaknessCompensation(entity), null);
             }
         }
     }
@@ -407,7 +410,7 @@ public class ModuleOldPotionEffects extends OCMModule {
     private void removeWeaknessCompensation() {
         for (World world : plugin.getServer().getWorlds()) {
             for (LivingEntity entity : world.getLivingEntities()) {
-                WeaknessCompensation.remove(entity);
+                OCMScheduler.runOn(entity, () -> WeaknessCompensation.remove(entity), null);
             }
         }
     }

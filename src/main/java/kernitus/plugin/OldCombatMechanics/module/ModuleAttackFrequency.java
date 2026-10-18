@@ -6,6 +6,7 @@
 package kernitus.plugin.OldCombatMechanics.module;
 
 import kernitus.plugin.OldCombatMechanics.OCMMain;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
@@ -23,7 +24,7 @@ import org.bukkit.event.player.PlayerRespawnEvent;
 public class ModuleAttackFrequency extends OCMModule {
 
     private static final int DEFAULT_DELAY = 20;
-    private static int playerDelay, mobDelay;
+    private static volatile int playerDelay, mobDelay;
 
     public ModuleAttackFrequency(OCMMain plugin) {
         super(plugin, "attack-frequency");
@@ -35,12 +36,14 @@ public class ModuleAttackFrequency extends OCMModule {
         playerDelay = module().getInt("playerDelay");
         mobDelay = module().getInt("mobDelay");
 
-        Bukkit.getWorlds().forEach(world -> world.getLivingEntities().forEach(livingEntity -> {
-            if (livingEntity instanceof Player)
-                livingEntity.setMaximumNoDamageTicks(isEnabled((Player) livingEntity) ? playerDelay : DEFAULT_DELAY);
-            else
-                livingEntity.setMaximumNoDamageTicks(isEnabled(world) ? mobDelay : DEFAULT_DELAY);
-        }));
+        // On Folia this lists entities of every region; each one is updated on its own thread.
+        Bukkit.getWorlds().forEach(world -> world.getLivingEntities().forEach(livingEntity ->
+                OCMScheduler.runOn(livingEntity, () -> {
+                    if (livingEntity instanceof Player)
+                        livingEntity.setMaximumNoDamageTicks(isEnabled((Player) livingEntity) ? playerDelay : DEFAULT_DELAY);
+                    else
+                        livingEntity.setMaximumNoDamageTicks(isEnabled(world) ? mobDelay : DEFAULT_DELAY);
+                }, null)));
     }
 
     @EventHandler
