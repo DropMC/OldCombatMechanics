@@ -9,6 +9,7 @@ import kernitus.plugin.OldCombatMechanics.ModuleLoader
 import kernitus.plugin.OldCombatMechanics.OCMMain
 import kernitus.plugin.OldCombatMechanics.module.OCMModule
 import kernitus.plugin.OldCombatMechanics.utilities.Config
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler
 import kernitus.plugin.OldCombatMechanics.utilities.storage.PlayerModuleOverrides
 import kernitus.plugin.OldCombatMechanics.utilities.storage.PlayerStorage
 import org.bukkit.Bukkit
@@ -43,13 +44,15 @@ class OldCombatMechanicsAPIImpl(
         playerData.setModesetForWorld(worldId, normalisedModesetName)
         PlayerStorage.setPlayerData(player.uniqueId, playerData)
         PlayerStorage.scheduleSave()
-        fireModesetChangeEvent(
-            player,
-            previousModeset,
-            normalisedModesetName,
-            PlayerModesetChangeEvent.Reason.API,
-        )
-        notifyPlayerStateChanged(player)
+        onPlayerThread(player) {
+            fireModesetChangeEvent(
+                player,
+                previousModeset,
+                normalisedModesetName,
+                PlayerModesetChangeEvent.Reason.API,
+            )
+            ModuleLoader.notifyPlayerStateChanged(player)
+        }
     }
 
     override fun forceEnableModuleForPlayer(
@@ -75,28 +78,32 @@ class OldCombatMechanicsAPIImpl(
         if (previousOverride != PlayerModuleOverride.DEFAULT &&
             PlayerModuleOverrides.clearOverride(player, normalisedModuleName)
         ) {
-            fireModuleOverrideChangeEvent(
-                player,
-                normalisedModuleName,
-                previousOverride,
-                PlayerModuleOverride.DEFAULT,
-            )
-            notifyPlayerStateChanged(player)
+            onPlayerThread(player) {
+                fireModuleOverrideChangeEvent(
+                    player,
+                    normalisedModuleName,
+                    previousOverride,
+                    PlayerModuleOverride.DEFAULT,
+                )
+                ModuleLoader.notifyPlayerStateChanged(player)
+            }
         }
     }
 
     override fun clearAllModuleOverridesForPlayer(player: Player) {
         val changedOverrides = getModuleOverridesForPlayer(player).toSortedMap()
         if (changedOverrides.isNotEmpty() && PlayerModuleOverrides.clearAll(player)) {
-            changedOverrides.forEach { (moduleName, previousOverride) ->
-                fireModuleOverrideChangeEvent(
-                    player,
-                    moduleName,
-                    previousOverride,
-                    PlayerModuleOverride.DEFAULT,
-                )
+            onPlayerThread(player) {
+                changedOverrides.forEach { (moduleName, previousOverride) ->
+                    fireModuleOverrideChangeEvent(
+                        player,
+                        moduleName,
+                        previousOverride,
+                        PlayerModuleOverride.DEFAULT,
+                    )
+                }
+                ModuleLoader.notifyPlayerStateChanged(player)
             }
-            notifyPlayerStateChanged(player)
         }
     }
 
@@ -141,10 +148,12 @@ class OldCombatMechanicsAPIImpl(
                 PlayerModuleOverrides.setOverride(player, moduleName, override)
             }
         }
-        changes.forEach { (moduleName, previousOverride, newOverride) ->
-            fireModuleOverrideChangeEvent(player, moduleName, previousOverride, newOverride)
+        onPlayerThread(player) {
+            changes.forEach { (moduleName, previousOverride, newOverride) ->
+                fireModuleOverrideChangeEvent(player, moduleName, previousOverride, newOverride)
+            }
+            ModuleLoader.notifyPlayerStateChanged(player)
         }
-        notifyPlayerStateChanged(player)
     }
 
     override fun isModuleEnabledForPlayer(
@@ -215,8 +224,10 @@ class OldCombatMechanicsAPIImpl(
             return
         }
         PlayerModuleOverrides.setOverride(player, normalisedModuleName, newOverride)
-        fireModuleOverrideChangeEvent(player, normalisedModuleName, previousOverride, newOverride)
-        notifyPlayerStateChanged(player)
+        onPlayerThread(player) {
+            fireModuleOverrideChangeEvent(player, normalisedModuleName, previousOverride, newOverride)
+            ModuleLoader.notifyPlayerStateChanged(player)
+        }
     }
 
     private fun fireModesetChangeEvent(
@@ -241,12 +252,12 @@ class OldCombatMechanicsAPIImpl(
         )
     }
 
-    private fun notifyPlayerStateChanged(player: Player) {
-        if (Bukkit.isPrimaryThread()) {
-            ModuleLoader.notifyPlayerStateChanged(player)
-            return
-        }
-        Bukkit.getScheduler().runTask(plugin, Runnable { ModuleLoader.notifyPlayerStateChanged(player) })
+    // Inline for callers on the player's thread; others get the events and re-apply on that thread next tick.
+    private inline fun onPlayerThread(
+        player: Player,
+        crossinline action: () -> Unit,
+    ) {
+        OCMScheduler.runOn(player, Runnable { action() }, null)
     }
 
     private data class ModuleOverrideChange(

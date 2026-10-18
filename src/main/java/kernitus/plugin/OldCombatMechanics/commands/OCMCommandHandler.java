@@ -12,6 +12,7 @@ import kernitus.plugin.OldCombatMechanics.utilities.Config;
 import kernitus.plugin.OldCombatMechanics.utilities.Messenger;
 import kernitus.plugin.OldCombatMechanics.utilities.storage.PlayerData;
 import kernitus.plugin.OldCombatMechanics.utilities.storage.PlayerStorage;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.command.Command;
@@ -53,8 +54,11 @@ public class OCMCommandHandler implements CommandExecutor {
     }
 
     private void reload(CommandSender sender) {
-        Config.reload();
-        Messenger.sendNoPrefix(sender, "&6&lOldCombatMechanics&e config file reloaded");
+        // Reload touches global state and re-applies to every player on their own thread.
+        OCMScheduler.runGlobal(() -> {
+            Config.reload();
+            Messenger.sendNoPrefix(sender, "&6&lOldCombatMechanics&e config file reloaded");
+        });
     }
 
     private void mode(CommandSender sender, String[] args) {
@@ -111,12 +115,22 @@ public class OCMCommandHandler implements CommandExecutor {
         }
 
         if (player == null) {
-            Messenger.send(sender,
-                    Config.getConfig().getString("mode-messages.invalid-player",
-                            "&4ERROR: &rmode-messages.invalid-player string missing"));
+            sendInvalidPlayer(sender);
             return;
         }
 
+        // The target may be ticked by another region thread than the sender.
+        final Player target = player;
+        OCMScheduler.runOn(target, () -> setMode(sender, target, modesetName), () -> sendInvalidPlayer(sender));
+    }
+
+    private static void sendInvalidPlayer(CommandSender sender) {
+        Messenger.send(sender,
+                Config.getConfig().getString("mode-messages.invalid-player",
+                        "&4ERROR: &rmode-messages.invalid-player string missing"));
+    }
+
+    private static void setMode(CommandSender sender, Player player, String modesetName) {
         final UUID worldId = player.getWorld().getUID();
         final Set<String> worldModesets = Config.getAllowedModesets(worldId);
 
