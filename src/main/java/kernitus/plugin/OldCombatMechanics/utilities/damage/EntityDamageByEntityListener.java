@@ -29,10 +29,9 @@ public class EntityDamageByEntityListener extends OCMModule {
 
     private static EntityDamageByEntityListener INSTANCE;
     private volatile boolean enabled;
-    // Both maps are written by the damaged entity's thread. Changes to one key in both maps happen inside a
-    // compute on lastDamageExpiries, so the memory sweep on the global thread never sees half an update.
-    private final Map<UUID, Double> lastDamages;
-    private final ConcurrentHashMap<UUID, Expiry> lastDamageExpiries;
+    // Written by the damaged entity's thread with plain puts of immutable entries; the memory sweep on the global
+    // thread removes only the exact entry it judged.
+    private final ConcurrentHashMap<UUID, StoredDamage> lastDamages;
     private volatile TaskHandle expirySweepTask;
     private static final long EXPIRY_SWEEP_INTERVAL_TICKS = 20L;
     private static final long MIN_LAST_DAMAGE_TTL_TICKS = 20L;
@@ -47,7 +46,6 @@ public class EntityDamageByEntityListener extends OCMModule {
         super(plugin, "entity-damage-listener");
         INSTANCE = this;
         lastDamages = new ConcurrentHashMap<>();
-        lastDamageExpiries = new ConcurrentHashMap<>();
     }
 
     public static EntityDamageByEntityListener getINSTANCE() {
@@ -66,7 +64,6 @@ public class EntityDamageByEntityListener extends OCMModule {
         } else {
             stopExpirySweeperIfNeeded();
             lastDamages.clear();
-            lastDamageExpiries.clear();
         }
     }
 
@@ -90,35 +87,49 @@ public class EntityDamageByEntityListener extends OCMModule {
         final long delayTicks = Math.max(MIN_LAST_DAMAGE_TTL_TICKS, damagee.getMaximumNoDamageTicks());
         final long nowTicks = damagee.getTicksLived();
         final long candidateExpiry = nowTicks + delayTicks;
-        lastDamageExpiries.compute(damagee.getUniqueId(), (uuid, existing) -> {
-            lastDamages.put(uuid, damage);
-            if (existing != null && !existing.isReset(nowTicks) && candidateExpiry <= existing.expiryTicks) {
-                return existing;
-            }
-            final long sweepAfterNanos = Math.max(MIN_SWEEP_AGE_NANOS, 4L * delayTicks * NANOS_PER_TICK);
-            return new Expiry(nowTicks, candidateExpiry, System.nanoTime() + sweepAfterNanos);
-        });
+        final UUID uuid = damagee.getUniqueId();
+        final StoredDamage existing = lastDamages.get(uuid);
+        if (existing != null && existing.expires && !existing.isReset(nowTicks)
+                && candidateExpiry <= existing.expiryTicks) {
+            // The expiry does not grow: keep it, and the entry itself when the damage is unchanged too.
+            if (Double.compare(existing.damage, damage) == 0) return;
+            lastDamages.put(uuid, new StoredDamage(damage, existing.createdTicks, existing.expiryTicks,
+                    existing.sweepAtNanos));
+            return;
+        }
+        final long sweepAfterNanos = Math.max(MIN_SWEEP_AGE_NANOS, 4L * delayTicks * NANOS_PER_TICK);
+        lastDamages.put(uuid, new StoredDamage(damage, nowTicks, candidateExpiry, System.nanoTime() + sweepAfterNanos));
     }
 
     private void sweepExpiredEntries() {
         final long now = System.nanoTime();
-        for (Map.Entry<UUID, Expiry> entry : lastDamageExpiries.entrySet()) {
-            if (now - entry.getValue().sweepAtNanos < 0) continue;
-            final Expiry judged = entry.getValue();
-            lastDamageExpiries.computeIfPresent(entry.getKey(), (uuid, current) -> {
-                if (current != judged) return current;
-                lastDamages.remove(uuid);
-                return null;
-            });
+        for (Map.Entry<UUID, StoredDamage> entry : lastDamages.entrySet()) {
+            final StoredDamage judged = entry.getValue();
+            if (!judged.expires || now - judged.sweepAtNanos < 0) continue;
+            lastDamages.remove(entry.getKey(), judged);
         }
     }
 
-    private static final class Expiry {
+    private static final class StoredDamage {
+        private final double damage;
+        // False only for entries injected by integration tests, which never expire, as a damage with no expiry did.
+        private final boolean expires;
         private final long createdTicks;
         private final long expiryTicks;
         private final long sweepAtNanos;
 
-        private Expiry(long createdTicks, long expiryTicks, long sweepAtNanos) {
+        // Integration tests inject entries with this shape.
+        private StoredDamage(double damage) {
+            this.damage = damage;
+            this.expires = false;
+            this.createdTicks = 0L;
+            this.expiryTicks = 0L;
+            this.sweepAtNanos = 0L;
+        }
+
+        private StoredDamage(double damage, long createdTicks, long expiryTicks, long sweepAtNanos) {
+            this.damage = damage;
+            this.expires = true;
             this.createdTicks = createdTicks;
             this.expiryTicks = expiryTicks;
             this.sweepAtNanos = sweepAtNanos;
@@ -130,7 +141,7 @@ public class EntityDamageByEntityListener extends OCMModule {
         }
 
         private boolean isExpired(long nowTicks) {
-            return isReset(nowTicks) || expiryTicks <= nowTicks;
+            return expires && (isReset(nowTicks) || expiryTicks <= nowTicks);
         }
     }
 
@@ -143,7 +154,8 @@ public class EntityDamageByEntityListener extends OCMModule {
             if (!(damagee instanceof LivingEntity)) return;
             final LivingEntity livingDamagee = ((LivingEntity) damagee);
 
-            final Double storedDamage = lastDamages.get(livingDamagee.getUniqueId());
+            final StoredDamage stored = lastDamages.get(livingDamagee.getUniqueId());
+            final Double storedDamage = stored == null ? null : stored.damage;
             debug("Non-entity damage before restore: lastDamage=" + livingDamagee.getLastDamage()
                     + " stored=" + storedDamage, livingDamagee);
             debug("Non-entity damage before restore: lastDamage=" + livingDamagee.getLastDamage()
@@ -328,8 +340,9 @@ public class EntityDamageByEntityListener extends OCMModule {
      * @param damagee The living entity to try to restore the last damage for
      */
     private void restoreLastDamage(LivingEntity damagee) {
-        final Double lastStoredDamage = resolveStoredDamage(damagee);
-        if (lastStoredDamage != null) {
+        final StoredDamage stored = resolveStoredDamage(damagee);
+        if (stored != null) {
+            final double lastStoredDamage = stored.damage;
             final LivingEntity livingDamagee = damagee;
             livingDamagee.setLastDamage(lastStoredDamage);
             storeLastDamage(livingDamagee, lastStoredDamage);
@@ -369,8 +382,8 @@ public class EntityDamageByEntityListener extends OCMModule {
             // Last damage was either set to correct value above in this listener, or we're using the server's value
             // If other plugins later modify BASE damage, they should either be taking last damage into account,
             // or ignoring the event if it is cancelled
-            final Double storedDamage = resolveStoredDamage(livingDamagee);
-            final double lastDamage = storedDamage != null ? storedDamage : livingDamagee.getLastDamage();
+            final StoredDamage stored = resolveStoredDamage(livingDamagee);
+            final double lastDamage = stored != null ? stored.damage : livingDamagee.getLastDamage();
             if (newDamage <= lastDamage) {
                 event.setDamage(0);
                 event.setCancelled(true);
@@ -396,25 +409,18 @@ public class EntityDamageByEntityListener extends OCMModule {
         return newDamage;
     }
 
-    private Double resolveStoredDamage(LivingEntity damagee) {
+    private StoredDamage resolveStoredDamage(LivingEntity damagee) {
         final UUID uuid = damagee.getUniqueId();
-        final Expiry expiry = lastDamageExpiries.get(uuid);
-        if (expiry != null && expiry.isExpired(damagee.getTicksLived())) {
-            lastDamageExpiries.computeIfPresent(uuid, (key, current) -> {
-                if (current != expiry) return current;
-                lastDamages.remove(key);
-                return null;
-            });
+        final StoredDamage stored = lastDamages.get(uuid);
+        if (stored != null && stored.isExpired(damagee.getTicksLived())) {
+            lastDamages.remove(uuid, stored);
             return null;
         }
-        return lastDamages.get(uuid);
+        return stored;
     }
 
     private void clearStoredDamage(LivingEntity damagee) {
-        lastDamageExpiries.compute(damagee.getUniqueId(), (uuid, current) -> {
-            lastDamages.remove(uuid);
-            return null;
-        });
+        lastDamages.remove(damagee.getUniqueId());
     }
 
     private boolean damageSourceBypassesCooldown(EntityDamageEvent event) {
