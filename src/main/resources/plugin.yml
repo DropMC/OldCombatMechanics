@@ -11,6 +11,7 @@ load: POSTWORLD
 depend: [packetevents]
 softdepend: [PlaceholderAPI, MythicMobs]
 api-version: 1.13
+folia-supported: true
 
 commands:
   oldcombatmechanics:
