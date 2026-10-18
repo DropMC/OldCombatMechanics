@@ -7,7 +7,7 @@ package kernitus.plugin.OldCombatMechanics.module;
 
 import kernitus.plugin.OldCombatMechanics.OCMMain;
 import com.cryptomorin.xseries.XEnchantment;
-import org.bukkit.Bukkit;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.TickClock;
 import org.bukkit.Material;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
@@ -15,10 +15,11 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.player.PlayerItemDamageEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.scheduler.BukkitTask;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 public class ModuleOldArmourDurability extends OCMModule {
@@ -27,13 +28,11 @@ public class ModuleOldArmourDurability extends OCMModule {
     // old-armour-durability doesn't double-apply/over-apply changes during explosion bursts.
     //
     // Performance/correctness:
-    // - Use a normal HashMap (WeakHashMap<UUID, ...> can drop entries unpredictably).
-    // - Avoid scheduling one task per explosion: keep a shared cleanup task that runs only while entries exist.
-    // - Entries expire after 1 tick, which is long enough for the follow-up PlayerItemDamageEvents to fire but
-    //   short enough to not interfere with unrelated armour wear later.
-    private final Map<UUID, ExplosionDamagedArmour> explosionDamaged = new HashMap<>();
-    private BukkitTask explosionCleanupTask;
-    private long explosionTickCounter;
+    // - Use a normal map (WeakHashMap<UUID, ...> can drop entries unpredictably).
+    // - No task per explosion and no sweep task: the player's thread checks the tick when it reads the entry.
+    // - Entries are valid in the tick they were created in, which is long enough for the follow-up
+    //   PlayerItemDamageEvents to fire but short enough to not interfere with unrelated armour wear later.
+    private final Map<UUID, ExplosionDamagedArmour> explosionDamaged = new ConcurrentHashMap<>();
 
     public ModuleOldArmourDurability(OCMMain plugin) {
         super(plugin, "old-armour-durability");
@@ -56,9 +55,10 @@ public class ModuleOldArmourDurability extends OCMModule {
                 )) return;
 
         final UUID uuid = player.getUniqueId();
-        if (explosionDamaged.containsKey(uuid)) {
-            final ExplosionDamagedArmour data = explosionDamaged.get(uuid);
-            if (data == null) return;
+        final ExplosionDamagedArmour data = explosionDamaged.get(uuid);
+        if (data != null && data.createdAtTick != TickClock.ownerTick()) {
+            explosionDamaged.remove(uuid, data);
+        } else if (data != null) {
             final List<ItemStack> armour = data.armour;
             // ItemStack.equals() checks material, durability and quantity to make sure nothing changed in the meantime
             // We're checking all the pieces this way just in case they're wearing two helmets or something strange
@@ -94,49 +94,23 @@ public class ModuleOldArmourDurability extends OCMModule {
         final Player player = (Player) e.getEntity();
         final UUID uuid = player.getUniqueId();
         final List<ItemStack> armour = Arrays.stream(player.getInventory().getArmorContents()).filter(Objects::nonNull).collect(Collectors.toList());
-        explosionDamaged.put(uuid, new ExplosionDamagedArmour(armour, explosionTickCounter + 1L));
-        ensureExplosionCleanupTaskRunning();
+        explosionDamaged.put(uuid, new ExplosionDamagedArmour(armour, TickClock.ownerTick()));
 
         debug("Detected explosion!", player);
     }
 
-    private void ensureExplosionCleanupTaskRunning() {
-        if (explosionCleanupTask != null) return;
-        explosionTickCounter = 0;
-
-        explosionCleanupTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-            explosionTickCounter++;
-            if (explosionDamaged.isEmpty()) {
-                stopExplosionCleanupTaskIfIdle();
-                return;
-            }
-
-            final Iterator<Map.Entry<UUID, ExplosionDamagedArmour>> it = explosionDamaged.entrySet().iterator();
-            while (it.hasNext()) {
-                final ExplosionDamagedArmour data = it.next().getValue();
-                if (data == null || data.expiresAtTick <= explosionTickCounter) {
-                    it.remove();
-                }
-            }
-
-            stopExplosionCleanupTaskIfIdle();
-        }, 1L, 1L);
-    }
-
-    private void stopExplosionCleanupTaskIfIdle() {
-        if (explosionCleanupTask == null) return;
-        if (!explosionDamaged.isEmpty()) return;
-        explosionCleanupTask.cancel();
-        explosionCleanupTask = null;
+    @EventHandler
+    public void onPlayerQuit(PlayerQuitEvent e) {
+        explosionDamaged.remove(e.getPlayer().getUniqueId());
     }
 
     private static final class ExplosionDamagedArmour {
         private final List<ItemStack> armour;
-        private final long expiresAtTick;
+        private final long createdAtTick;
 
-        private ExplosionDamagedArmour(List<ItemStack> armour, long expiresAtTick) {
+        private ExplosionDamagedArmour(List<ItemStack> armour, long createdAtTick) {
             this.armour = armour;
-            this.expiresAtTick = expiresAtTick;
+            this.createdAtTick = createdAtTick;
         }
     }
 }

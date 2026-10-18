@@ -9,7 +9,7 @@ import com.cryptomorin.xseries.XAttribute;
 import kernitus.plugin.OldCombatMechanics.OCMMain;
 import kernitus.plugin.OldCombatMechanics.utilities.CompatibilityCapabilities;
 import kernitus.plugin.OldCombatMechanics.utilities.compatibility.MythicMobsKnockbackBridge;
-import org.bukkit.Bukkit;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.TickClock;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.attribute.Attribute;
@@ -27,13 +27,11 @@ import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerVelocityEvent;
 import org.bukkit.inventory.EntityEquipment;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Vector;
 
-import java.util.HashMap;
-import java.util.Iterator;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Reverts knockback formula to 1.8.
@@ -41,23 +39,21 @@ import java.util.UUID;
  */
 public class ModulePlayerKnockback extends OCMModule {
 
-    private double knockbackHorizontal;
-    private double knockbackVertical;
-    private double knockbackVerticalLimit;
-    private double knockbackExtraHorizontal;
-    private double knockbackExtraVertical;
-    private boolean netheriteKnockbackResistance;
+    private volatile double knockbackHorizontal;
+    private volatile double knockbackVertical;
+    private volatile double knockbackVerticalLimit;
+    private volatile double knockbackExtraHorizontal;
+    private volatile double knockbackExtraVertical;
+    private volatile boolean netheriteKnockbackResistance;
 
     // Knockback override for the next PlayerVelocityEvent.
     // Performance/correctness:
-    // - Use a normal HashMap (WeakHashMap can drop entries unpredictably).
-    // - Keep entries for at most 1 tick. If PlayerVelocityEvent does not fire, a stale entry must not affect
-    //   a later, unrelated velocity event (explosions, plugins, etc.).
-    // - Avoid scheduling one task per hit: we run one shared cleanup task only while there is anything pending.
-    private final Map<UUID, PendingKnockback> pendingKnockback = new HashMap<>();
+    // - Use a normal map (WeakHashMap can drop entries unpredictably).
+    // - Keep entries for the tick they were created in only. If PlayerVelocityEvent does not fire, a stale entry
+    //   must not affect a later, unrelated velocity event (explosions, plugins, etc.).
+    // - No task per hit and no sweep task: the victim's thread checks the tick when it consumes the entry.
+    private final Map<UUID, PendingKnockback> pendingKnockback = new ConcurrentHashMap<>();
     private final MythicMobsKnockbackBridge mythicMobsKnockbackBridge;
-    private BukkitTask pendingCleanupTask;
-    private long pendingTickCounter;
     private final Attribute knockbackResistanceAttribute = XAttribute.KNOCKBACK_RESISTANCE.get();
 
     public ModulePlayerKnockback(OCMMain plugin) {
@@ -80,7 +76,6 @@ public class ModulePlayerKnockback extends OCMModule {
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent e) {
         pendingKnockback.remove(e.getPlayer().getUniqueId());
-        stopCleanupTaskIfIdle();
     }
 
     // Vanilla does its own knockback, so we need to set it again.
@@ -90,13 +85,11 @@ public class ModulePlayerKnockback extends OCMModule {
     public void onPlayerVelocityEvent(PlayerVelocityEvent event) {
         final UUID uuid = event.getPlayer().getUniqueId();
         final PendingKnockback pending = pendingKnockback.remove(uuid);
-        if (pending == null) return;
+        if (pending == null || !pending.isValidAt(TickClock.ownerTick())) return;
         if (mythicMobsKnockbackBridge.consumeNoKnockback(uuid, pending.sourceId)) {
-            stopCleanupTaskIfIdle();
             return;
         }
         event.setVelocity(pending.velocity);
-        stopCleanupTaskIfIdle();
     }
 
     @EventHandler
@@ -217,51 +210,33 @@ public class ModulePlayerKnockback extends OCMModule {
 
         // Knockback is sent immediately in 1.8+, there is no reason to send packets
         // manually
-        pendingKnockback.put(victimId, new PendingKnockback(playerVelocity, attacker.getUniqueId(), pendingTickCounter + 1));
-        ensureCleanupTaskRunning();
-    }
-
-    private void ensureCleanupTaskRunning() {
-        if (pendingCleanupTask != null) return;
-        pendingTickCounter = 0;
-
-        // Delay by 1 tick so we never expire entries in the same tick they were created.
-        pendingCleanupTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-            pendingTickCounter++;
-            if (pendingKnockback.isEmpty()) {
-                stopCleanupTaskIfIdle();
-                return;
-            }
-
-            final Iterator<Map.Entry<UUID, PendingKnockback>> it = pendingKnockback.entrySet().iterator();
-            while (it.hasNext()) {
-                final PendingKnockback pending = it.next().getValue();
-                if (pending == null || pending.expiresAtTick <= pendingTickCounter) {
-                    it.remove();
-                }
-            }
-
-            stopCleanupTaskIfIdle();
-        }, 1L, 1L);
-    }
-
-    private void stopCleanupTaskIfIdle() {
-        if (pendingCleanupTask == null) return;
-        if (!pendingKnockback.isEmpty()) return;
-        pendingCleanupTask.cancel();
-        pendingCleanupTask = null;
+        final long tick = TickClock.ownerTick();
+        pendingKnockback.put(victimId, new PendingKnockback(playerVelocity, attacker.getUniqueId(), tick, tick));
     }
 
     private static final class PendingKnockback {
         private final Vector velocity;
         private final UUID sourceId;
+        // Valid from createdAtTick to expiresAtTick inclusive, on the victim's clock. Both bounds matter on Folia,
+        // where moving to another region can move the clock backwards.
+        private final long createdAtTick;
         private final long expiresAtTick;
 
+        // Integration tests inject entries with this shape.
         private PendingKnockback(Vector velocity, UUID sourceId, long expiresAtTick) {
+            this(velocity, sourceId, Long.MIN_VALUE, expiresAtTick);
+        }
+
+        private PendingKnockback(Vector velocity, UUID sourceId, long createdAtTick, long expiresAtTick) {
             // Defensive clone: callers may re-use/mutate the Vector instance.
             this.velocity = velocity == null ? new Vector() : velocity.clone();
             this.sourceId = sourceId;
+            this.createdAtTick = createdAtTick;
             this.expiresAtTick = expiresAtTick;
+        }
+
+        private boolean isValidAt(long tick) {
+            return tick >= createdAtTick && tick <= expiresAtTick;
         }
     }
 }

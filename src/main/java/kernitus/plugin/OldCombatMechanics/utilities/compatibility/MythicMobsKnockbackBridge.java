@@ -6,7 +6,8 @@
 package kernitus.plugin.OldCombatMechanics.utilities.compatibility;
 
 import kernitus.plugin.OldCombatMechanics.OCMMain;
-import org.bukkit.Bukkit;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.TickClock;
 import org.bukkit.entity.Entity;
 import org.bukkit.event.Event;
 import org.bukkit.event.EventException;
@@ -14,17 +15,17 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
 import org.bukkit.plugin.EventExecutor;
-import org.bukkit.scheduler.BukkitTask;
 
 import java.lang.reflect.Array;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 /**
@@ -38,24 +39,31 @@ public final class MythicMobsKnockbackBridge {
     private static final String MYTHIC_MOBS_PLUGIN = "MythicMobs";
     private static final String MYTHIC_DAMAGE_EVENT = "io.lumine.mythic.bukkit.events.MythicDamageEvent";
     private static final String NO_IMPACT_TAG = "no_impact";
+    private static final String[] KNOCKBACK_KEYS =
+            {"preventsKnockback", "preventsknockback", "preventKnockback", "preventknockback"};
+    // A marker lasts for the tick it was created in and the next one.
+    private static final long MARKER_TICKS = 2L;
+    // Folia only: a marker set from a thread that does not own the target cannot read the target's clock.
+    private static final long OFF_OWNER_MARKER_NANOS = TimeUnit.MILLISECONDS.toNanos(100L);
+    // Memory only: markers never consumed (mobs) are pruned once they are this old.
+    private static final long PRUNE_AGE_NANOS = TimeUnit.SECONDS.toNanos(10L);
+    private static final int PRUNE_THRESHOLD = 64;
 
     private final OCMMain plugin;
     private final Listener listener = new Listener() { };
-    private final Map<UUID, NoKnockbackMarker> markers = new HashMap<>();
+    private final Map<UUID, NoKnockbackMarker> markers = new ConcurrentHashMap<>();
 
-    private Method getDamageMetadata;
-    private Method getTarget;
-    private Method getPreventsKnockback;
-    private Method getTags;
-    private Method getData;
-    private Method getCaster;
-    private Method getSource;
-    private BukkitTask cleanupTask;
-    private long tickCounter;
-    private boolean registered;
-    private boolean disabled;
-    private boolean warnedDisabled;
-    private boolean warnedMissingAccessors;
+    private volatile Method getDamageMetadata;
+    private volatile Method getTarget;
+    private volatile Method getPreventsKnockback;
+    private volatile Method getTags;
+    private volatile Method getData;
+    private volatile Method getCaster;
+    private volatile Method getSource;
+    private volatile boolean registered;
+    private volatile boolean disabled;
+    private volatile boolean warnedDisabled;
+    private volatile boolean warnedMissingAccessors;
 
     public MythicMobsKnockbackBridge(OCMMain plugin) {
         this.plugin = plugin;
@@ -74,9 +82,8 @@ public final class MythicMobsKnockbackBridge {
 
         final NoKnockbackMarker marker = markers.get(targetId);
         if (marker == null) return false;
-        if (marker.expiresAtTick <= tickCounter) {
-            markers.remove(targetId);
-            stopCleanupTaskIfIdle();
+        if (!marker.isValid()) {
+            markers.remove(targetId, marker);
             return false;
         }
 
@@ -84,8 +91,7 @@ public final class MythicMobsKnockbackBridge {
             return false;
         }
 
-        markers.remove(targetId);
-        stopCleanupTaskIfIdle();
+        markers.remove(targetId, marker);
         return true;
     }
 
@@ -167,9 +173,9 @@ public final class MythicMobsKnockbackBridge {
         final Entity source = toBukkitEntity(invoke(getSource, event));
         if (source == null) {
             final Entity caster = toBukkitEntity(invoke(getCaster, event));
-            markNoKnockback(target.getUniqueId(), caster == null ? null : caster.getUniqueId());
+            markNoKnockback(target, caster == null ? null : caster.getUniqueId());
         } else {
-            markNoKnockback(target.getUniqueId(), source.getUniqueId());
+            markNoKnockback(target, source.getUniqueId());
         }
     }
 
@@ -177,30 +183,32 @@ public final class MythicMobsKnockbackBridge {
         if (disabled) return false;
         if (metadata == null) return false;
 
-        if (getPreventsKnockback == null || !getPreventsKnockback.getDeclaringClass().isInstance(metadata)) {
-            getPreventsKnockback = publicNoArgMethod(metadata.getClass(), "getPreventsKnockback");
+        Method preventsKnockback = getPreventsKnockback;
+        if (preventsKnockback == null || !preventsKnockback.getDeclaringClass().isInstance(metadata)) {
+            preventsKnockback = publicNoArgMethod(metadata.getClass(), "getPreventsKnockback");
+            getPreventsKnockback = preventsKnockback;
         }
-        if (Boolean.TRUE.equals(invoke(getPreventsKnockback, metadata))) return true;
+        if (Boolean.TRUE.equals(invoke(preventsKnockback, metadata))) return true;
 
-        for (String key : knockbackKeys()) {
+        for (String key : KNOCKBACK_KEYS) {
             if (Boolean.TRUE.equals(invokeSingleArg(metadata, "getBoolean", key))) return true;
             if (metadataValuePreventsKnockback(invokeSingleArg(metadata, "getValue", key), 0)) return true;
             if (metadataValuePreventsKnockback(invokeTwoArgs(metadata, "getOrDefault", key, Boolean.FALSE), 0)) return true;
         }
 
-        if (getTags == null || !getTags.getDeclaringClass().isInstance(metadata)) {
-            getTags = publicNoArgMethod(metadata.getClass(), "getTags");
+        Method tags = getTags;
+        if (tags == null || !tags.getDeclaringClass().isInstance(metadata)) {
+            tags = publicNoArgMethod(metadata.getClass(), "getTags");
+            getTags = tags;
         }
-        if (hasNoImpactTag(invoke(getTags, metadata))) return true;
+        if (hasNoImpactTag(invoke(tags, metadata))) return true;
 
-        if (getData == null || !getData.getDeclaringClass().isInstance(metadata)) {
-            getData = publicNoArgMethod(metadata.getClass(), "getData");
+        Method data = getData;
+        if (data == null || !data.getDeclaringClass().isInstance(metadata)) {
+            data = publicNoArgMethod(metadata.getClass(), "getData");
+            getData = data;
         }
-        return metadataValuePreventsKnockback(invoke(getData, metadata), 0);
-    }
-
-    private String[] knockbackKeys() {
-        return new String[] {"preventsKnockback", "preventsknockback", "preventKnockback", "preventknockback"};
+        return metadataValuePreventsKnockback(invoke(data, metadata), 0);
     }
 
     private boolean metadataValuePreventsKnockback(Object value, int depth) {
@@ -267,35 +275,20 @@ public final class MythicMobsKnockbackBridge {
         return null;
     }
 
-    private void markNoKnockback(UUID targetId, UUID sourceId) {
-        markers.put(targetId, new NoKnockbackMarker(sourceId, tickCounter + 2));
-        ensureCleanupTaskRunning();
+    private void markNoKnockback(Entity target, UUID sourceId) {
+        final long now = System.nanoTime();
+        final NoKnockbackMarker marker = OCMScheduler.isOwnedByCurrentRegion(target)
+                ? new NoKnockbackMarker(sourceId, TickClock.ownerTick(), now, Long.MAX_VALUE)
+                : new NoKnockbackMarker(sourceId, Long.MIN_VALUE, now, now + OFF_OWNER_MARKER_NANOS);
+        markers.put(target.getUniqueId(), marker);
+        if (markers.size() > PRUNE_THRESHOLD) pruneOldMarkers(now);
     }
 
-    private void ensureCleanupTaskRunning() {
-        if (cleanupTask != null) return;
-        cleanupTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-            tickCounter++;
-            if (markers.isEmpty()) {
-                stopCleanupTaskIfIdle();
-                return;
-            }
-
-            final Iterator<Map.Entry<UUID, NoKnockbackMarker>> it = markers.entrySet().iterator();
-            while (it.hasNext()) {
-                if (it.next().getValue().expiresAtTick <= tickCounter) {
-                    it.remove();
-                }
-            }
-
-            stopCleanupTaskIfIdle();
-        }, 1L, 1L);
-    }
-
-    private void stopCleanupTaskIfIdle() {
-        if (cleanupTask == null || !markers.isEmpty()) return;
-        cleanupTask.cancel();
-        cleanupTask = null;
+    private void pruneOldMarkers(long now) {
+        final Iterator<Map.Entry<UUID, NoKnockbackMarker>> it = markers.entrySet().iterator();
+        while (it.hasNext()) {
+            if (now - it.next().getValue().createdAtNanos > PRUNE_AGE_NANOS) it.remove();
+        }
     }
 
     private Object invoke(Method method, Object handle) {
@@ -393,11 +386,23 @@ public final class MythicMobsKnockbackBridge {
 
     private static final class NoKnockbackMarker {
         private final UUID sourceId;
-        private final long expiresAtTick;
+        // Long.MIN_VALUE when the marker was set off the target's thread and uses the wall-clock deadline instead.
+        private final long createdAtTick;
+        private final long createdAtNanos;
+        private final long deadlineNanos;
 
-        private NoKnockbackMarker(UUID sourceId, long expiresAtTick) {
+        private NoKnockbackMarker(UUID sourceId, long createdAtTick, long createdAtNanos, long deadlineNanos) {
             this.sourceId = sourceId;
-            this.expiresAtTick = expiresAtTick;
+            this.createdAtTick = createdAtTick;
+            this.createdAtNanos = createdAtNanos;
+            this.deadlineNanos = deadlineNanos;
+        }
+
+        // Called on the target's thread.
+        private boolean isValid() {
+            if (createdAtTick == Long.MIN_VALUE) return System.nanoTime() - deadlineNanos < 0;
+            final long age = TickClock.ownerTick() - createdAtTick;
+            return age >= 0 && age < MARKER_TICKS;
         }
     }
 }
