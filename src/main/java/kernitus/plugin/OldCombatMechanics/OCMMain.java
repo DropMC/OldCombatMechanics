@@ -109,9 +109,50 @@ public class OCMMain extends JavaPlugin {
 
         Config.reload();
 
-        // BStats Metrics
-        final Metrics metrics = new Metrics(this, 53);
+        // BStats Metrics. Its submit task uses the Bukkit scheduler, which Folia does not have.
+        final Metrics metrics = OCMScheduler.isRegionThreaded() ? null : new Metrics(this, 53);
+        if (metrics != null) addMetricsCharts(metrics);
 
+        enableListeners.forEach(Runnable::run);
+
+        // Properly handle Plugman load/unload.
+        final List<RegisteredListener> joinListeners = Arrays
+                .stream(PlayerJoinEvent.getHandlerList().getRegisteredListeners())
+                .filter(registeredListener -> registeredListener.getPlugin().equals(this))
+                .collect(Collectors.toList());
+
+        Bukkit.getOnlinePlayers().forEach(player -> OCMScheduler.runOn(player, () -> {
+            final PlayerJoinEvent event = new PlayerJoinEvent(player, "");
+
+            // Trick all the modules into thinking the player just joined in case the plugin
+            // was loaded with Plugman.
+            // This way attack speeds, item modifications, etc. will be applied immediately
+            // instead of after a re-log.
+            joinListeners.forEach(registeredListener -> {
+                try {
+                    registeredListener.callEvent(event);
+                } catch (EventException e) {
+                    e.printStackTrace();
+                }
+            });
+        }, null));
+
+        // Logging to console the enabling of OCM
+        final PluginDescriptionFile pdfFile = this.getDescription();
+        logger.info(pdfFile.getName() + " v" + getDisplayVersion() + " has been enabled");
+
+        if (Config.moduleEnabled("update-checker"))
+            OCMScheduler.runAsyncAfterTicks(20L, () -> new UpdateChecker(this).performUpdate());
+
+        if (metrics != null) {
+            metrics.addCustomChart(new SimplePie("auto_update_pie",
+                    () -> Config.moduleSettingEnabled("update-checker",
+                            "auto-update") ? "enabled" : "disabled"));
+        }
+
+    }
+
+    private void addMetricsCharts(Metrics metrics) {
         metrics.addCustomChart(new SimplePie("server_software", () -> {
             final String name = Bukkit.getServer().getName();
             if (name == null || name.isEmpty()) return "Unknown";
@@ -137,48 +178,14 @@ public class OCMMain extends JavaPlugin {
             int count = (int) ModuleLoader.getModules().stream().filter(OCMModule::isEnabled).count();
             return Integer.toString(count);
         }));
-
-        enableListeners.forEach(Runnable::run);
-
-        // Properly handle Plugman load/unload.
-        final List<RegisteredListener> joinListeners = Arrays
-                .stream(PlayerJoinEvent.getHandlerList().getRegisteredListeners())
-                .filter(registeredListener -> registeredListener.getPlugin().equals(this))
-                .collect(Collectors.toList());
-
-        Bukkit.getOnlinePlayers().forEach(player -> {
-            final PlayerJoinEvent event = new PlayerJoinEvent(player, "");
-
-            // Trick all the modules into thinking the player just joined in case the plugin
-            // was loaded with Plugman.
-            // This way attack speeds, item modifications, etc. will be applied immediately
-            // instead of after a re-log.
-            joinListeners.forEach(registeredListener -> {
-                try {
-                    registeredListener.callEvent(event);
-                } catch (EventException e) {
-                    e.printStackTrace();
-                }
-            });
-        });
-
-        // Logging to console the enabling of OCM
-        final PluginDescriptionFile pdfFile = this.getDescription();
-        logger.info(pdfFile.getName() + " v" + getDisplayVersion() + " has been enabled");
-
-        if (Config.moduleEnabled("update-checker"))
-            Bukkit.getScheduler().runTaskLaterAsynchronously(this,
-                    () -> new UpdateChecker(this).performUpdate(), 20L);
-
-        metrics.addCustomChart(new SimplePie("auto_update_pie",
-                () -> Config.moduleSettingEnabled("update-checker",
-                        "auto-update") ? "enabled" : "disabled"));
-
     }
 
     @Override
     public void onDisable() {
         final PluginDescriptionFile pdfFile = this.getDescription();
+
+        // A pending delayed save is a global task now; the final save below replaces it.
+        OCMScheduler.cancelGlobalAndAsync();
 
         disableListeners.forEach(Runnable::run);
 

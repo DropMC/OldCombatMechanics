@@ -48,11 +48,24 @@ object OCMScheduler {
     fun initialise(plugin: Plugin) {
         this.plugin = plugin
         folia = FoliaApi.resolve(plugin)
+        regionThreaded =
+            try {
+                Class.forName("io.papermc.paper.threadedregions.RegionizedServer")
+                true
+            } catch (ignored: ClassNotFoundException) {
+                false
+            }
         TickClock.initialise(plugin)
     }
 
     @JvmStatic
     fun hasRegionScheduler(): Boolean = folia != null
+
+    /** True on Folia and its forks, where regions tick in parallel and the Bukkit scheduler is unavailable. */
+    @JvmStatic
+    fun isRegionThreaded(): Boolean = regionThreaded
+
+    private var regionThreaded = false
 
     @JvmStatic
     fun isOwnedByCurrentRegion(entity: Entity): Boolean {

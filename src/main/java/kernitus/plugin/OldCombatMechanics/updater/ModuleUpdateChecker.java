@@ -8,7 +8,7 @@ package kernitus.plugin.OldCombatMechanics.updater;
 import kernitus.plugin.OldCombatMechanics.OCMMain;
 import kernitus.plugin.OldCombatMechanics.UpdateChecker;
 import kernitus.plugin.OldCombatMechanics.module.OCMModule;
-import org.bukkit.Bukkit;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.player.PlayerJoinEvent;
@@ -23,7 +23,6 @@ public class ModuleUpdateChecker extends OCMModule {
     public void onPlayerLogin(PlayerJoinEvent e) {
         final Player player = e.getPlayer();
         if (player.hasPermission("OldCombatMechanics.notify"))
-            Bukkit.getScheduler().runTaskLaterAsynchronously(plugin,
-                    () -> new UpdateChecker(plugin).performUpdate(), 20L);
+            OCMScheduler.runAsyncAfterTicks(20L, () -> new UpdateChecker(plugin).performUpdate());
     }
 }
