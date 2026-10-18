@@ -21,6 +21,7 @@ import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.projectiles.ProjectileSource;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Allows you to throw enderpearls as often as you like, not only after a cooldown.
@@ -31,10 +32,10 @@ public class ModuleDisableEnderpearlCooldown extends OCMModule {
      * Contains players that threw an ender pearl. As the handler calls launchProjectile,
      * which also calls ProjectileLaunchEvent, we need to ignore that event call.
      */
-    private final Set<UUID> ignoredPlayers = new HashSet<>();
-    private Map<UUID, Long> lastLaunched;
-    private int cooldown;
-    private String message;
+    private final Set<UUID> ignoredPlayers = ConcurrentHashMap.newKeySet();
+    private volatile Map<UUID, Long> lastLaunched;
+    private volatile int cooldown;
+    private volatile String message;
     private static ModuleDisableEnderpearlCooldown INSTANCE;
 
     public ModuleDisableEnderpearlCooldown(OCMMain plugin) {
@@ -47,9 +48,9 @@ public class ModuleDisableEnderpearlCooldown extends OCMModule {
         cooldown = module().getInt("cooldown");
         if (cooldown > 0) {
             // Performance/correctness:
-            // - Use a normal HashMap; WeakHashMap<UUID, ...> can drop entries unpredictably.
+            // - Use a normal map; WeakHashMap<UUID, ...> can drop entries unpredictably.
             // - Avoid a recurring cleanup task: expired entries are dropped lazily during checks.
-            if (lastLaunched == null) lastLaunched = new HashMap<>();
+            if (lastLaunched == null) lastLaunched = new ConcurrentHashMap<>();
         } else lastLaunched = null;
 
         message = module().getBoolean("showMessage") ? module().getString("message") : null;
@@ -79,12 +80,14 @@ public class ModuleDisableEnderpearlCooldown extends OCMModule {
         e.setCancelled(true);
 
         // Check if the cooldown has expired yet
+        final Map<UUID, Long> lastLaunched = this.lastLaunched;
         if (lastLaunched != null) {
             // Intentionally wall-clock driven: enderpearl cooldowns are typically expected to be real-time, even
             // when TPS drops, unlike 1.8 natural regen which is tick based.
             final long currentTime = System.currentTimeMillis() / 1000;
-            if (lastLaunched.containsKey(uuid)) {
-                final long elapsedSeconds = currentTime - lastLaunched.get(uuid);
+            final Long launchedAt = lastLaunched.get(uuid);
+            if (launchedAt != null) {
+                final long elapsedSeconds = currentTime - launchedAt;
                 if (elapsedSeconds < cooldown) {
                     if (message != null) Messenger.send(player, message, cooldown - elapsedSeconds);
                     return;
@@ -123,6 +126,7 @@ public class ModuleDisableEnderpearlCooldown extends OCMModule {
 
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent e) {
+        final Map<UUID, Long> lastLaunched = this.lastLaunched;
         if (lastLaunched != null) lastLaunched.remove(e.getPlayer().getUniqueId());
     }
 
@@ -132,9 +136,11 @@ public class ModuleDisableEnderpearlCooldown extends OCMModule {
      * @return The remaining cooldown time in seconds, or 0 if there is no cooldown or it has expired.
      */
     public long getEnderpearlCooldown(UUID playerUUID) {
-        if (lastLaunched != null && lastLaunched.containsKey(playerUUID)) {
+        final Map<UUID, Long> lastLaunched = this.lastLaunched;
+        final Long launchedAt = lastLaunched == null ? null : lastLaunched.get(playerUUID);
+        if (launchedAt != null) {
             final long currentTime = System.currentTimeMillis() / 1000; // Current time in seconds
-            final long lastLaunchTime = lastLaunched.get(playerUUID); // Last launch time in seconds
+            final long lastLaunchTime = launchedAt; // Last launch time in seconds
             final long elapsedSeconds = currentTime - lastLaunchTime;
             final long cooldownRemaining = cooldown - elapsedSeconds;
             if (cooldownRemaining <= 0) {

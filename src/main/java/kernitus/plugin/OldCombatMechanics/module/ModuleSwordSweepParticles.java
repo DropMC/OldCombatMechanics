@@ -42,7 +42,7 @@ public class ModuleSwordSweepParticles extends OCMModule {
      */
     private class ParticleListener extends PacketListenerAbstract {
 
-        private boolean disabledDueToError;
+        private volatile boolean disabledDueToError;
 
         @Override
         public void onPacketSend(PacketSendEvent packetEvent) {

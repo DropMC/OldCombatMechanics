@@ -26,7 +26,7 @@ import java.util.stream.Collectors;
 public class ModuleOldArmourStrength extends OCMModule {
 // Defence order is armour defence points -> resistance -> armour enchants -> absorption
 
-    private boolean randomness;
+    private volatile boolean randomness;
 
     public ModuleOldArmourStrength(OCMMain plugin) {
         super(plugin, "old-armour-strength");

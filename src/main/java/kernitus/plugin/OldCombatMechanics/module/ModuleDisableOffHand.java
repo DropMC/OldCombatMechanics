@@ -37,15 +37,15 @@ import java.util.function.BiPredicate;
 public class ModuleDisableOffHand extends OCMModule {
 
     private static final int OFFHAND_SLOT = 40;
-    private List<Material> materials;
-    private String deniedMessage;
-    private BlockType blockType;
+    private volatile List<Material> materials;
+    private volatile String deniedMessage;
+    private volatile BlockType blockType;
 
     // Cache reflective methods used on older versions
     private static volatile boolean useReflectionViewPath = false;
-    private static Method getViewMethod;
-    private static Method getBottomInventoryMethod;
-    private static Method getTopInventoryMethod;
+    private static volatile Method getViewMethod;
+    private static volatile Method getBottomInventoryMethod;
+    private static volatile Method getTopInventoryMethod;
 
     public ModuleDisableOffHand(OCMMain plugin) {
         super(plugin, "disable-offhand");

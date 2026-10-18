@@ -23,8 +23,8 @@ import java.util.List;
  */
 public class ModuleDisableCrafting extends OCMModule {
 
-    private List<Material> denied;
-    private String message;
+    private volatile List<Material> denied;
+    private volatile String message;
 
     public ModuleDisableCrafting(OCMMain plugin) {
         super(plugin, "disable-crafting");

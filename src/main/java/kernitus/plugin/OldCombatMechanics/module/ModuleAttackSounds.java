@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.lang.reflect.Method;
 
 /**
@@ -30,7 +31,8 @@ import java.lang.reflect.Method;
 public class ModuleAttackSounds extends OCMModule {
 
     private final SoundListener soundListener = new SoundListener();
-    private final Set<String> blockedSounds = new HashSet<>();
+    // Read by the Netty sound listener; reload swaps entries without passing through an empty set.
+    private final Set<String> blockedSounds = ConcurrentHashMap.newKeySet();
 
     public ModuleAttackSounds(OCMMain plugin) {
         super(plugin, "disable-attack-sounds");
@@ -40,8 +42,9 @@ public class ModuleAttackSounds extends OCMModule {
 
     @Override
     public void reload() {
-        blockedSounds.clear();
-        blockedSounds.addAll(getBlockedSounds());
+        final Collection<String> configured = getBlockedSounds();
+        blockedSounds.addAll(configured);
+        blockedSounds.retainAll(configured);
 
         if (isEnabled() && !blockedSounds.isEmpty())
             PacketEvents.getAPI().getEventManager().registerListener(soundListener);
@@ -85,7 +88,7 @@ public class ModuleAttackSounds extends OCMModule {
      * Disables attack sounds.
      */
     private class SoundListener extends PacketListenerAbstract {
-        private boolean disabledDueToError;
+        private volatile boolean disabledDueToError;
 
         @Override
         public void onPacketSend(PacketSendEvent packetEvent) {

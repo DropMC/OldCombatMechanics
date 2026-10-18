@@ -15,7 +15,7 @@ import org.bukkit.event.entity.EntityDamageEvent;
  */
 public class ModuleOldBurnDelay extends OCMModule {
 
-    private int fireTicks;
+    private volatile int fireTicks;
 
     public ModuleOldBurnDelay(OCMMain plugin) {
         super(plugin, "old-burn-delay");

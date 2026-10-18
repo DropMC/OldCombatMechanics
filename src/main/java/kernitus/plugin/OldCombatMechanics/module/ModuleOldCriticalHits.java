@@ -13,8 +13,8 @@ import org.bukkit.event.EventHandler;
 
 public class ModuleOldCriticalHits extends OCMModule {
 
-    private boolean allowSprinting;
-    private double multiplier;
+    private volatile boolean allowSprinting;
+    private volatile double multiplier;
 
     public ModuleOldCriticalHits(OCMMain plugin) {
         super(plugin, "old-critical-hits");
