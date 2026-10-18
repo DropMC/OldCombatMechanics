@@ -7,6 +7,8 @@ package kernitus.plugin.OldCombatMechanics.module;
 
 import kernitus.plugin.OldCombatMechanics.OCMMain;
 import kernitus.plugin.OldCombatMechanics.utilities.reflection.Reflector;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.TaskHandle;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -28,30 +30,28 @@ import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.inventory.meta.ItemMeta;
-import org.bukkit.scheduler.BukkitTask;
 
 import java.lang.reflect.Method;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ModuleSwordBlocking extends OCMModule {
 
-    // Not using WeakHashMaps here, for extra reliability
-    private final Map<UUID, ItemStack> storedItems = new HashMap<>();
-    private final Map<UUID, LegacySwordBlockState> legacyStates = new HashMap<>();
-    private BukkitTask legacyTask;
-    private long tickCounter;
-    private int restoreDelay;
-    private boolean paperSupported;
-    private Object paperAdapter;
+    // Not using WeakHashMaps here, for extra reliability. Entries are only touched on their player's thread.
+    private final Map<UUID, ItemStack> storedItems = new ConcurrentHashMap<>();
+    private final Map<UUID, LegacySwordBlockState> legacyStates = new ConcurrentHashMap<>();
+    private volatile int restoreDelay;
+    private volatile boolean paperSupported;
+    private volatile Object paperAdapter;
     private java.lang.reflect.Method paperApply;
     private java.lang.reflect.Method paperClear;
     private java.lang.reflect.Method paperHasConsumable;
     private java.lang.reflect.Method paperIsBlockingSword;
-    private Method startUsingItemMethod;
-    private boolean startUsingItemMethodResolved;
-    private boolean playerIsHandRaisedUnavailable;
-    private Method craftPlayerGetHandleMethod;
-    private final Map<Class<?>, Method> nmsStartUsingItemCache = new HashMap<>();
+    private volatile Method startUsingItemMethod;
+    private volatile boolean startUsingItemMethodResolved;
+    private volatile boolean playerIsHandRaisedUnavailable;
+    private volatile Method craftPlayerGetHandleMethod;
+    private final Map<Class<?>, Method> nmsStartUsingItemCache = new ConcurrentHashMap<>();
     private Object minClientVersion;
     private Method packetEventsGetAPI;
     private Method packetEventsGetPlayerManager;
@@ -67,14 +67,14 @@ public class ModuleSwordBlocking extends OCMModule {
     private static final long ENTITY_INTERACTION_DEDUPE_WINDOW_NANOS = 75_000_000L;
     private static final long ENTITY_INTERACTION_PRUNE_INTERVAL_NANOS = 250_000_000L;
     private static final int ENTITY_INTERACTION_FORCE_PRUNE_SIZE = 128;
-    private final Map<EntityInteractionKey, Long> handledEntityInteractions = new HashMap<>();
-    private long nextEntityInteractionPruneAtNanos;
+    private final Map<EntityInteractionKey, Long> handledEntityInteractions = new ConcurrentHashMap<>();
+    private volatile long nextEntityInteractionPruneAtNanos;
     private static ModuleSwordBlocking INSTANCE;
-    private boolean blockCanBuildEventPlayerAvailable;
-    private boolean blockCanBuildEventPlayerUnavailable;
+    private volatile boolean blockCanBuildEventPlayerAvailable;
+    private volatile boolean blockCanBuildEventPlayerUnavailable;
 
     // Used until BlockCanBuildEvent#getPlayer() is confirmed available, and retained on legacy Bukkit APIs where it is not available.
-    private Map<Location, UUID> lastInteractedBlocks;
+    private volatile Map<Location, UUID> lastInteractedBlocks;
 
     public ModuleSwordBlocking(OCMMain plugin) {
         super(plugin, "sword-blocking");
@@ -82,7 +82,7 @@ public class ModuleSwordBlocking extends OCMModule {
 
         // Legacy semantic/API bridge: older servers expose failed block placement without the player, so keep
         // the last clicked block until direct BlockCanBuildEvent#getPlayer() is known to work on this runtime.
-        lastInteractedBlocks = new WeakHashMap<>();
+        lastInteractedBlocks = Collections.synchronizedMap(new WeakHashMap<>());
 
         initialisePaperAdapter();
         initialisePacketEventsClientVersion();
@@ -98,17 +98,7 @@ public class ModuleSwordBlocking extends OCMModule {
         if (!paperSupported || paperAdapter == null) return;
         if (isEnabled() && isPaperAnimationEnabled()) return;
 
-        final Runnable cleanup = () -> {
-            for (Player player : Bukkit.getOnlinePlayers()) {
-                onModesetChange(player);
-            }
-        };
-
-        if (Bukkit.isPrimaryThread()) {
-            cleanup.run();
-        } else {
-            Bukkit.getScheduler().runTask(plugin, cleanup);
-        }
+        OCMScheduler.forEachOnlinePlayer(this::onModesetChange);
     }
 
     @Override
@@ -271,7 +261,8 @@ public class ModuleSwordBlocking extends OCMModule {
         Player player = getBlockCanBuildEventPlayerIfSupported(e);
         if (player == null && blockCanBuildEventPlayerUnavailable) {
             final Location blockLocation = e.getBlock().getLocation();
-            final UUID uuid = lastInteractedBlocks == null ? null : lastInteractedBlocks.remove(blockLocation);
+            final Map<Location, UUID> interactedBlocks = lastInteractedBlocks;
+            final UUID uuid = interactedBlocks == null ? null : interactedBlocks.remove(blockLocation);
             player = uuid == null ? null : Bukkit.getServer().getPlayer(uuid);
         }
 
@@ -292,10 +283,11 @@ public class ModuleSwordBlocking extends OCMModule {
         // This is also the case if the main hand item was used, e.g. a bow
         if (action == Action.RIGHT_CLICK_BLOCK && e.getHand() == EquipmentSlot.HAND) return;
         if (e.isBlockInHand()) {
-            if (!blockCanBuildEventPlayerAvailable && lastInteractedBlocks != null) {
+            final Map<Location, UUID> interactedBlocks = lastInteractedBlocks;
+            if (!blockCanBuildEventPlayerAvailable && interactedBlocks != null) {
                 final Block clickedBlock = e.getClickedBlock();
                 if (clickedBlock != null)
-                    lastInteractedBlocks.put(clickedBlock.getLocation(), player.getUniqueId());
+                    interactedBlocks.put(clickedBlock.getLocation(), player.getUniqueId());
             }
             return; // Handle failed block place in separate listener
         }
@@ -430,7 +422,7 @@ public class ModuleSwordBlocking extends OCMModule {
         final LegacySwordBlockState removedLegacyState = legacyStates.remove(id);
         if (storedOffhand == null && removedLegacyState == null) return;
 
-        stopLegacyTaskIfIdle();
+        if (removedLegacyState != null) removedLegacyState.cancel();
 
         if (storedOffhand == null) {
             return;
@@ -620,11 +612,11 @@ public class ModuleSwordBlocking extends OCMModule {
             if (!fromLegacyTask) {
                 scheduleLegacyRestore(p);
             } else {
-                // When running inside the legacy tick task, do not touch the map structure while iterating.
+                // When running inside the legacy tick task, leave the state to the task.
                 // Just extend the restore deadline.
                 final LegacySwordBlockState state = legacyStates.get(id);
                 if (state != null) {
-                    state.restoreAtTick = tickCounter + Math.max(0, restoreDelay);
+                    state.restoreAtTick = state.ticks + Math.max(0, restoreDelay);
                 }
             }
             return;
@@ -632,17 +624,62 @@ public class ModuleSwordBlocking extends OCMModule {
 
         p.getInventory().setItemInOffHand(storedItems.remove(id));
         if (!fromLegacyTask) {
-            legacyStates.remove(id);
-            stopLegacyTaskIfIdle();
+            final LegacySwordBlockState state = legacyStates.remove(id);
+            if (state != null) state.cancel();
         }
     }
 
     private void scheduleLegacyRestore(Player p) {
         final UUID id = p.getUniqueId();
         final LegacySwordBlockState state = legacyStates.computeIfAbsent(id, ignored -> new LegacySwordBlockState());
-        state.restoreAtTick = tickCounter + Math.max(0, restoreDelay);
-        state.nextBlockingCheckTick = tickCounter + 10L;
-        ensureLegacyTaskRunning();
+        state.restoreAtTick = state.ticks + Math.max(0, restoreDelay);
+        state.nextBlockingCheckTick = state.ticks + 10L;
+        if (state.task != null) return;
+        // One timer per blocking player, on that player's thread. It stops once the state is gone.
+        state.task = OCMScheduler.runEntityAtFixedRate(p, task -> tickLegacyState(p, state, task), () -> {
+            // The player left before the item could be restored: drop the stored item reference.
+            if (legacyStates.remove(id, state)) storedItems.remove(id);
+        }, 1L, 1L);
+    }
+
+    private void tickLegacyState(Player player, LegacySwordBlockState state, TaskHandle task) {
+        state.ticks++;
+        final UUID uuid = player.getUniqueId();
+        if (legacyStates.get(uuid) != state) {
+            task.cancel();
+            return;
+        }
+        if (!storedItems.containsKey(uuid)) {
+            return;
+        }
+
+        if (!player.isOnline()) {
+            // Cannot restore cleanly; drop state and stored item reference.
+            storedItems.remove(uuid);
+            legacyStates.remove(uuid, state);
+            task.cancel();
+            return;
+        }
+
+        // Mirror previous behaviour: after 10 ticks, poll every 2 ticks for stop-blocking.
+        if (state.ticks >= state.nextBlockingCheckTick) {
+            if (!isPlayerBlocking(player)) {
+                restore(player, false, true);
+                legacyStates.remove(uuid, state);
+                task.cancel();
+                return;
+            }
+            state.nextBlockingCheckTick += 2L;
+        }
+
+        // Restore-delay timeout: attempt restore; if still blocking, restore() reschedules.
+        if (state.ticks >= state.restoreAtTick) {
+            restore(player, false, true);
+            if (!storedItems.containsKey(uuid)) {
+                legacyStates.remove(uuid, state);
+                task.cancel();
+            }
+        }
     }
 
     private boolean areItemsStored(UUID uuid) {
@@ -679,7 +716,7 @@ public class ModuleSwordBlocking extends OCMModule {
         } catch (NoSuchMethodError | AbstractMethodError ignored) {
             blockCanBuildEventPlayerUnavailable = true;
             if (lastInteractedBlocks == null) {
-                lastInteractedBlocks = new WeakHashMap<>();
+                lastInteractedBlocks = Collections.synchronizedMap(new WeakHashMap<>());
             }
             return null;
         }
@@ -764,13 +801,13 @@ public class ModuleSwordBlocking extends OCMModule {
         if (player == null || slot == null) return;
 
         if (!startUsingItemMethodResolved) {
-            startUsingItemMethodResolved = true;
             try {
                 final Class<?> livingEntityClass = Class.forName("org.bukkit.entity.LivingEntity");
                 startUsingItemMethod = livingEntityClass.getMethod("startUsingItem", EquipmentSlot.class);
             } catch (Throwable ignored) {
                 startUsingItemMethod = null;
             }
+            startUsingItemMethodResolved = true;
         }
 
         final java.lang.reflect.Method m = startUsingItemMethod;
@@ -802,7 +839,7 @@ public class ModuleSwordBlocking extends OCMModule {
             Method startUsing = nmsStartUsingItemCache.get(handleClass);
             if (startUsing == null) {
                 startUsing = resolveNmsStartUsingItem(handleClass);
-                nmsStartUsingItemCache.put(handleClass, startUsing);
+                if (startUsing != null) nmsStartUsingItemCache.put(handleClass, startUsing);
             }
             if (startUsing == null) return;
 
@@ -1016,7 +1053,7 @@ public class ModuleSwordBlocking extends OCMModule {
             final org.bukkit.inventory.Inventory eventTop = viewAtEvent == null ? null : viewAtEvent.getTopInventory();
             final org.bukkit.inventory.Inventory eventBottom = viewAtEvent == null ? null : viewAtEvent.getBottomInventory();
             // Apply/strip against the actual inventory after the swap has taken place.
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            OCMScheduler.runEntityDelayed(player, () -> {
                 final PlayerInventory inv = player.getInventory();
                 final ItemStack main = inv.getItemInMainHand();
                 final ItemStack off = inv.getItemInOffHand();
@@ -1037,7 +1074,7 @@ public class ModuleSwordBlocking extends OCMModule {
                 if (offStripped) {
                     inv.setItemInOffHand(off);
                 }
-            });
+            }, null, 1L);
         }
 
         @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -1063,68 +1100,16 @@ public class ModuleSwordBlocking extends OCMModule {
         }
     }
 
-    private void ensureLegacyTaskRunning() {
-        if (legacyTask != null) return;
-        tickCounter = 0;
-        // Performance: previously, sword blocking could schedule per-player repeating tasks. When many players
-        // block at once this scales poorly (scheduler overhead + allocations). Instead, keep per-player state in
-        // a map and run one shared tick task while there is any active legacy blocking state.
-        legacyTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-            tickCounter++;
-            if (legacyStates.isEmpty()) {
-                stopLegacyTaskIfIdle();
-                return;
-            }
-
-            // Iterate over a snapshot to avoid ConcurrentModificationException if legacyStates is mutated by other
-            // events during this tick (quit/world change, additional right-clicks, etc.).
-            final List<UUID> uuids = new ArrayList<>(legacyStates.keySet());
-            for (UUID uuid : uuids) {
-                final LegacySwordBlockState state = legacyStates.get(uuid);
-                if (state == null) continue;
-                if (!storedItems.containsKey(uuid)) {
-                    continue;
-                }
-
-                final Player player = Bukkit.getPlayer(uuid);
-                if (player == null) {
-                    // Cannot restore cleanly; drop state and stored item reference.
-                    storedItems.remove(uuid);
-                    legacyStates.remove(uuid);
-                    continue;
-                }
-
-                // Mirror previous behaviour: after 10 ticks, poll every 2 ticks for stop-blocking.
-                if (tickCounter >= state.nextBlockingCheckTick) {
-                    if (!isPlayerBlocking(player)) {
-                        restore(player, false, true);
-                        legacyStates.remove(uuid);
-                        continue;
-                    }
-                    state.nextBlockingCheckTick += 2L;
-                }
-
-                // Restore-delay timeout: attempt restore; if still blocking, restore() reschedules.
-                if (tickCounter >= state.restoreAtTick) {
-                    restore(player, false, true);
-                    if (!storedItems.containsKey(uuid)) legacyStates.remove(uuid);
-                }
-            }
-
-            stopLegacyTaskIfIdle();
-        }, 1L, 1L);
-    }
-
-    private void stopLegacyTaskIfIdle() {
-        if (legacyTask == null) return;
-        if (!legacyStates.isEmpty()) return;
-        legacyTask.cancel();
-        legacyTask = null;
-    }
-
+    // Only touched on the player's thread.
     private static final class LegacySwordBlockState {
+        private long ticks;
         private long restoreAtTick;
         private long nextBlockingCheckTick;
+        private TaskHandle task;
+
+        private void cancel() {
+            if (task != null) task.cancel();
+        }
     }
 
     private static final class EntityInteractionKey {
