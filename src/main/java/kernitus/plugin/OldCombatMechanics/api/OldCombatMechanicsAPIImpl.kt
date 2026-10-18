@@ -35,19 +35,26 @@ class OldCombatMechanicsAPIImpl(
         validateModesetForPlayer(player, normalisedModesetName)
 
         val worldId = player.world.uid
-        val playerData = PlayerStorage.getPlayerData(player.uniqueId)
-        val previousModeset = playerData.getModesetForWorld(worldId)
-        if (previousModeset == normalisedModesetName) {
+        var previousModeset: String? = null
+        val changed =
+            PlayerStorage.updatePlayerData(player.uniqueId) { playerData ->
+                previousModeset = playerData.getModesetForWorld(worldId)
+                if (previousModeset == normalisedModesetName) {
+                    false
+                } else {
+                    playerData.setModesetForWorld(worldId, normalisedModesetName)
+                    true
+                }
+            }
+        if (!changed) {
             return
         }
-
-        playerData.setModesetForWorld(worldId, normalisedModesetName)
-        PlayerStorage.setPlayerData(player.uniqueId, playerData)
+        val previous = previousModeset
         PlayerStorage.scheduleSave()
         onPlayerThread(player) {
             fireModesetChangeEvent(
                 player,
-                previousModeset,
+                previous,
                 normalisedModesetName,
                 PlayerModesetChangeEvent.Reason.API,
             )

@@ -34,6 +34,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
 import java.util.logging.Level;
 
 /**
@@ -130,6 +131,19 @@ public class PlayerStorage {
         return codecRegistry.get(PlayerData.class).decode(bsonDocument.asBsonReader(), DecoderContext.builder().build());
     }
 
+    /**
+     * Reads the player's data, applies {@code update} and stores the result when it returns true, all under the data
+     * lock, so concurrent writers for one player apply one after the other instead of overwriting each other.
+     */
+    public static boolean updatePlayerData(UUID uuid, Predicate<PlayerData> update) {
+        synchronized (DATA_LOCK) {
+            final PlayerData playerData = getPlayerData(uuid);
+            if (!update.test(playerData)) return false;
+            setPlayerData(uuid, playerData);
+            return true;
+        }
+    }
+
     public static @Nullable String getModesetForWorld(UUID uuid, UUID worldId) {
         Map<UUID, String> modesets = modesetCache.get(uuid);
         if (modesets == null) {
@@ -166,9 +180,11 @@ public class PlayerStorage {
         bsonDocument.forEach((key, value) -> document.put(key, value.isDocument() ? new Document(value.asDocument()) : value));
 
         // Put the Document into your data map
+        final Map<UUID, String> modesets = snapshot(playerData);
+        // The cache is refreshed under the lock too, so it always matches the last write to data.
         synchronized (DATA_LOCK) {
             data.put(uuid.toString(), document);
+            modesetCache.put(uuid, modesets);
         }
-        modesetCache.put(uuid, snapshot(playerData));
     }
 }

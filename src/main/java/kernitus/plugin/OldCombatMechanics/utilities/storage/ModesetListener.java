@@ -53,26 +53,35 @@ public class ModesetListener extends OCMModule {
     ) {
         final UUID worldId = world.getUID();
         final UUID playerId = player.getUniqueId();
-        final PlayerData playerData = PlayerStorage.getPlayerData(playerId);
-        final String originalModeset = playerData.getModesetForWorld(worldId);
-        String modesetName = playerData.getModesetForWorld(worldId);
+        // [0] the stored modeset, [1] the one chosen for this world
+        final String[] modesets = new String[2];
+        final boolean changed = PlayerStorage.updatePlayerData(playerId, playerData -> {
+            final String originalModeset = playerData.getModesetForWorld(worldId);
+            String modesetName = originalModeset;
 
-        // Get modesets allowed in to world
-        Set<String> allowedModesets = Config.getAllowedModesets(worldId);
+            // Get modesets allowed in to world
+            Set<String> allowedModesets = Config.getAllowedModesets(worldId);
 
-        // If they don't have a modeset in toWorld yet, or the stored one is not allowed there
-        if (modesetName == null || !allowedModesets.contains(modesetName)) {
-            // Try to use modeset of world they are coming from
-            if (modesetFromName != null && allowedModesets.contains(modesetFromName))
-                modesetName = modesetFromName;
-            else // Otherwise, if the from modeset is not allowed, use default for to world
-                modesetName = allowedModesets.stream().findFirst().orElse(null);
-        }
+            // If they don't have a modeset in toWorld yet, or the stored one is not allowed there
+            if (modesetName == null || !allowedModesets.contains(modesetName)) {
+                // Try to use modeset of world they are coming from
+                if (modesetFromName != null && allowedModesets.contains(modesetFromName))
+                    modesetName = modesetFromName;
+                else // Otherwise, if the from modeset is not allowed, use default for to world
+                    modesetName = allowedModesets.stream().findFirst().orElse(null);
+            }
+            modesets[0] = originalModeset;
+            modesets[1] = modesetName;
 
-        // If the modeset changed, set and save
-        if (originalModeset == null || !originalModeset.equals(modesetName)) {
+            // If the modeset changed, set and save
+            if (originalModeset != null && originalModeset.equals(modesetName)) return false;
             playerData.setModesetForWorld(worldId, modesetName);
-            PlayerStorage.setPlayerData(playerId, playerData);
+            return true;
+        });
+
+        if (changed) {
+            final String originalModeset = modesets[0];
+            final String modesetName = modesets[1];
             PlayerStorage.scheduleSave();
 
             Messenger.send(player,

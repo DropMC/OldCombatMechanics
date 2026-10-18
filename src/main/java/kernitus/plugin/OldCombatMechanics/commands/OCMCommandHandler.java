@@ -143,14 +143,17 @@ public class OCMCommandHandler implements CommandExecutor {
             return;
         }
 
-        final PlayerData playerData = PlayerStorage.getPlayerData(player.getUniqueId());
-        final String previousModeset = playerData.getModesetForWorld(worldId);
-        if (modesetName.equals(previousModeset)) {
+        final String[] previous = new String[1];
+        final boolean changed = PlayerStorage.updatePlayerData(player.getUniqueId(), playerData -> {
+            previous[0] = playerData.getModesetForWorld(worldId);
+            if (modesetName.equals(previous[0])) return false;
+            playerData.setModesetForWorld(worldId, modesetName);
+            return true;
+        });
+        if (!changed) {
             return;
         }
-
-        playerData.setModesetForWorld(worldId, modesetName);
-        PlayerStorage.setPlayerData(player.getUniqueId(), playerData);
+        final String previousModeset = previous[0];
         PlayerStorage.scheduleSave();
 
         Messenger.send(sender,
