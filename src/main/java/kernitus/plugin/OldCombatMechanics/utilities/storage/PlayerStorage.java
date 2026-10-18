@@ -17,9 +17,9 @@ import org.bson.*;
 import org.bson.codecs.*;
 import org.bson.codecs.configuration.CodecRegistries;
 import org.bson.codecs.configuration.CodecRegistry;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.TaskHandle;
 import org.bson.io.BasicOutputBuffer;
-import org.bukkit.Bukkit;
-import org.bukkit.scheduler.BukkitTask;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.File;
@@ -44,8 +44,12 @@ public class PlayerStorage {
     private static OCMMain plugin;
     private static Path dataFilePath;
     private static DocumentCodec documentCodec;
+    // Guards every read and write of data, which the async save encodes while tick threads update it.
+    private static final Object DATA_LOCK = new Object();
+    // Serialises encode and write, so an older snapshot never overwrites a newer one on disk.
+    private static final Object WRITE_LOCK = new Object();
     private static Document data;
-    private static final AtomicReference<BukkitTask> saveTask = new AtomicReference<>();
+    private static final AtomicReference<TaskHandle> saveTask = new AtomicReference<>();
     private static CodecRegistry codecRegistry;
     private static final Map<UUID, Map<UUID, String>> modesetCache = new ConcurrentHashMap<>();
 
@@ -61,7 +65,10 @@ public class PlayerStorage {
 
         PlayerStorage.documentCodec = new DocumentCodec(codecRegistry);
 
-        data = loadData();
+        final Document loaded = loadData();
+        synchronized (DATA_LOCK) {
+            data = loaded;
+        }
         modesetCache.clear();
 
         saveTask.set(null);
@@ -82,31 +89,37 @@ public class PlayerStorage {
 
     public static void scheduleSave() {
         // Schedule a task for later, if there isn't one already scheduled
-        saveTask.compareAndSet(null,
-                Bukkit.getScheduler().runTaskLaterAsynchronously(plugin, () -> {
-                    instantSave();
-                    saveTask.set(null);
-                }, 2400L) // Save after 2 minutes
-        );
+        if (saveTask.get() != null) return;
+        final TaskHandle task = OCMScheduler.runAsyncAfterTicks(2400L, () -> { // Save after 2 minutes
+            saveTask.set(null);
+            instantSave();
+        });
+        if (!saveTask.compareAndSet(null, task)) task.cancel();
     }
 
     public static void instantSave() {
-        final BasicOutputBuffer outputBuffer = new BasicOutputBuffer();
-        final BsonWriter writer = new BsonBinaryWriter(outputBuffer);
-        documentCodec.encode(writer, data, EncoderContext.builder().isEncodingCollectibleDocument(true).build());
-        writer.flush();
-
-        try {
-            Files.write(dataFilePath, outputBuffer.toByteArray());
-        } catch (IOException e) {
-            plugin.getLogger().log(Level.SEVERE, "Error saving player data", e);
-        } finally {
-            outputBuffer.close();
+        synchronized (WRITE_LOCK) {
+            final BasicOutputBuffer outputBuffer = new BasicOutputBuffer();
+            try {
+                final BsonWriter writer = new BsonBinaryWriter(outputBuffer);
+                synchronized (DATA_LOCK) {
+                    documentCodec.encode(writer, data, EncoderContext.builder().isEncodingCollectibleDocument(true).build());
+                }
+                writer.flush();
+                Files.write(dataFilePath, outputBuffer.toByteArray());
+            } catch (IOException e) {
+                plugin.getLogger().log(Level.SEVERE, "Error saving player data", e);
+            } finally {
+                outputBuffer.close();
+            }
         }
     }
 
     public static PlayerData getPlayerData(UUID uuid) {
-        final Document playerDoc = (Document) data.get(uuid.toString());
+        final Document playerDoc;
+        synchronized (DATA_LOCK) {
+            playerDoc = (Document) data.get(uuid.toString());
+        }
         if (playerDoc == null) {
             final PlayerData playerData = new PlayerData();
             setPlayerData(uuid, playerData);
@@ -153,7 +166,9 @@ public class PlayerStorage {
         bsonDocument.forEach((key, value) -> document.put(key, value.isDocument() ? new Document(value.asDocument()) : value));
 
         // Put the Document into your data map
-        data.put(uuid.toString(), document);
+        synchronized (DATA_LOCK) {
+            data.put(uuid.toString(), document);
+        }
         modesetCache.put(uuid, snapshot(playerData));
     }
 }

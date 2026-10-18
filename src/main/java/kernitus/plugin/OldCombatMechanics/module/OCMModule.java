@@ -74,7 +74,11 @@ public abstract class OCMModule implements Listener {
             return false;
         }
 
-        final PlayerModuleOverride playerOverride = PlayerModuleOverrides.getOverride(humanEntity, configName);
+        // Netty and placeholder threads can race with the quit on the player's own thread.
+        final PlayerModuleOverride playerOverride = PlayerModuleOverrides.getOverrideIfOnline(humanEntity, configName);
+        if (playerOverride == null) {
+            return false;
+        }
         if (playerOverride == PlayerModuleOverride.FORCE_ENABLED) {
             return true;
         }

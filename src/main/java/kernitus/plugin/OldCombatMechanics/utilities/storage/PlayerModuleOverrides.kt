@@ -43,6 +43,17 @@ object PlayerModuleOverrides {
         return perPlayer.getOrDefault(ModuleLoader.normaliseModuleName(moduleName), PlayerModuleOverride.DEFAULT)
     }
 
+    /** Like [getOverride], but returns null instead of throwing when the player has just gone offline. */
+    @JvmStatic
+    fun getOverrideIfOnline(
+        human: HumanEntity,
+        moduleName: String,
+    ): PlayerModuleOverride? {
+        if (!isOnline(human)) return null
+        val perPlayer = overridesByPlayer[human.uniqueId] ?: return PlayerModuleOverride.DEFAULT
+        return perPlayer.getOrDefault(ModuleLoader.normaliseModuleName(moduleName), PlayerModuleOverride.DEFAULT)
+    }
+
     @JvmStatic
     fun clearOverride(
         human: HumanEntity,
@@ -68,11 +79,12 @@ object PlayerModuleOverrides {
 
     @JvmStatic
     private fun requireOnline(human: HumanEntity) {
-        val isOnline =
-            when (human) {
-                is OfflinePlayer -> human.isOnline
-                else -> true // HumanEntity (e.g. a living NPC) — assume present in world
-            }
-        require(isOnline) { "HumanEntity ${human.name} is not online" }
+        require(isOnline(human)) { "HumanEntity ${human.name} is not online" }
     }
+
+    private fun isOnline(human: HumanEntity): Boolean =
+        when (human) {
+            is OfflinePlayer -> human.isOnline
+            else -> true // HumanEntity (e.g. a living NPC) — assume present in world
+        }
 }
