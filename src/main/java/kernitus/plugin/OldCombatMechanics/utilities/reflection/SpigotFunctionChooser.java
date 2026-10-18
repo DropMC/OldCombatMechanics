@@ -28,7 +28,7 @@ public class SpigotFunctionChooser<T, U, R> {
     private final BiFunction<T, U, Boolean> test;
     private final BiFunction<T, U, R> trueBranch;
     private final BiFunction<T, U, R> falseBranch;
-    private BiFunction<T, U, R> chosen;
+    private volatile BiFunction<T, U, R> chosen;
 
     /**
      * Creates a new {@link SpigotFunctionChooser}, which chooses between two given

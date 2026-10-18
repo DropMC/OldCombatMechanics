@@ -9,6 +9,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.Predicate;
 
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
@@ -560,7 +561,7 @@ public class PaperSwordBlocking {
 
     private void syncTestInventories(ItemStack stack) {
         if (!isTestServer() || stack == null) return;
-        for (Player player : Bukkit.getOnlinePlayers()) {
+        OCMScheduler.forEachOnlinePlayer(player -> {
             final PlayerInventory inventory = player.getInventory();
             final int size = inventory.getSize();
             for (int slot = 0; slot < size; slot++) {
@@ -576,7 +577,7 @@ public class PaperSwordBlocking {
                 applyComponentsInternal(cursor, false);
                 player.setItemOnCursor(cursor);
             }
-        }
+        });
     }
 
     private boolean isTestServer() {

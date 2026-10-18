@@ -10,6 +10,7 @@ import org.bukkit.entity.HumanEntity;
 import org.bukkit.entity.LivingEntity;
 
 import java.lang.reflect.Method;
+import java.util.Collections;
 import java.util.Map;
 import java.util.WeakHashMap;
 
@@ -18,9 +19,9 @@ import java.util.WeakHashMap;
  * game.
  */
 public class VersionCompatUtils {
-    private static Method cooldownMethod;
-    private static final Map<Class<?>, Method> absorptionAmountMethodCache = new WeakHashMap<>();
-    private static final Map<Class<?>, Method> handleMethodCache = new WeakHashMap<>();
+    private static volatile Method cooldownMethod;
+    private static final Map<Class<?>, Method> absorptionAmountMethodCache = Collections.synchronizedMap(new WeakHashMap<>());
+    private static final Map<Class<?>, Method> handleMethodCache = Collections.synchronizedMap(new WeakHashMap<>());
 
     /**
      * Returns a Craft object from the given Spigot object, e.g. CraftPlayer from
