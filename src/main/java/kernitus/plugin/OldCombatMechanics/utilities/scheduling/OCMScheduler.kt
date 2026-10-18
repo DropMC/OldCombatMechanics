@@ -122,8 +122,8 @@ object OCMScheduler {
             return true
         }
         val ticks = maxOf(1L, delay)
-        val dueTick = if (api.ownsEntity(entity)) TickClock.ownerTick() + ticks else NO_TICK
-        val aligned = AlignedTask(api, entity, task, retired, ticks, dueTick)
+        val scheduledTick = if (api.ownsEntity(entity)) TickClock.ownerTick() else NO_TICK
+        val aligned = AlignedTask(api, entity, task, retired, ticks, scheduledTick)
         if (!api.entityExecute(entity, plugin, aligned, retired, ticks)) {
             retired?.run()
             return false
@@ -297,6 +297,8 @@ object OCMScheduler {
     /**
      * Paper runs the Bukkit heartbeat before the entity schedulers, so a 1-tick entity task scheduled from a Bukkit
      * task would run later in the same tick. When the delay has not elapsed on the owner's clock yet, wait the rest.
+     * Folia regions count ticks separately, so a clock behind the scheduling tick means the entity changed region and
+     * the entity scheduler has already waited the full delay.
      */
     private class AlignedTask(
         private val api: FoliaApi,
@@ -304,15 +306,16 @@ object OCMScheduler {
         private val task: Runnable,
         private val retired: Runnable?,
         private val delay: Long,
-        private var dueTick: Long,
+        private var scheduledTick: Long,
     ) : Runnable {
         override fun run() {
-            val due = dueTick
-            if (due != NO_TICK) {
-                dueTick = NO_TICK
+            val scheduled = scheduledTick
+            if (scheduled != NO_TICK) {
+                scheduledTick = NO_TICK
                 val now = TickClock.ownerTick()
-                if (now < due) {
-                    if (!api.entityExecute(entity, plugin, this, retired, minOf(due - now, delay))) retired?.run()
+                val due = scheduled + delay
+                if (now >= scheduled && now < due) {
+                    if (!api.entityExecute(entity, plugin, this, retired, due - now)) retired?.run()
                     return
                 }
             }
