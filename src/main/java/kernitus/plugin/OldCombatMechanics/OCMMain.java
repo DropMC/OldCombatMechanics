@@ -18,6 +18,7 @@ import kernitus.plugin.OldCombatMechanics.utilities.Messenger;
 import kernitus.plugin.OldCombatMechanics.utilities.damage.AttackCooldownTracker;
 import kernitus.plugin.OldCombatMechanics.utilities.damage.EntityDamageByEntityListener;
 import kernitus.plugin.OldCombatMechanics.utilities.reflection.Reflector;
+import kernitus.plugin.OldCombatMechanics.utilities.scheduling.OCMScheduler;
 import kernitus.plugin.OldCombatMechanics.utilities.storage.ModesetListener;
 import kernitus.plugin.OldCombatMechanics.utilities.storage.PlayerModuleOverrides;
 import kernitus.plugin.OldCombatMechanics.utilities.storage.PlayerStorage;
@@ -64,6 +65,8 @@ public class OCMMain extends JavaPlugin {
     @Override
     public void onEnable() {
         INSTANCE = this;
+
+        OCMScheduler.initialise(this);
 
         // Setting up config.yml
         CH.setupConfigIfNotPresent();
