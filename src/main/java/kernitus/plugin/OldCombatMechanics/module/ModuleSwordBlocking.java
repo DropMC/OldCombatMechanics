@@ -331,10 +331,11 @@ public class ModuleSwordBlocking extends OCMModule {
     private void lazyPruneHandledEntityInteractions(long nowNanos, boolean force) {
         if (!force && nowNanos < nextEntityInteractionPruneAtNanos) return;
 
-        final Iterator<Map.Entry<EntityInteractionKey, Long>> it = handledEntityInteractions.entrySet().iterator();
-        while (it.hasNext()) {
-            if (it.next().getValue() <= nowNanos) {
-                it.remove();
+        for (Map.Entry<EntityInteractionKey, Long> entry : handledEntityInteractions.entrySet()) {
+            final Long expiresAt = entry.getValue();
+            // Conditional, so an entry another thread has just renewed is kept.
+            if (expiresAt <= nowNanos) {
+                handledEntityInteractions.remove(entry.getKey(), expiresAt);
             }
         }
         nextEntityInteractionPruneAtNanos = nowNanos + ENTITY_INTERACTION_PRUNE_INTERVAL_NANOS;

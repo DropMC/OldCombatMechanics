@@ -21,12 +21,12 @@ import java.lang.reflect.Array;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.Collection;
-import java.util.Iterator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 /**
@@ -46,13 +46,15 @@ public final class MythicMobsKnockbackBridge {
     private static final int MARKER_TICKS = 2;
     // Folia only: a marker set from a thread that does not own the target cannot read the target's clock.
     private static final long OFF_OWNER_MARKER_NANOS = TimeUnit.MILLISECONDS.toNanos(100L);
-    // Memory only: markers never consumed (mobs) are pruned once they are this old.
+    // Memory only: markers never consumed (no velocity event followed) are pruned once they are this old.
     private static final long PRUNE_AGE_NANOS = TimeUnit.SECONDS.toNanos(10L);
+    private static final long PRUNE_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(1L);
     private static final int PRUNE_THRESHOLD = 64;
 
     private final OCMMain plugin;
     private final Listener listener = new Listener() { };
     private final Map<UUID, NoKnockbackMarker> markers = new ConcurrentHashMap<>();
+    private final AtomicLong nextPruneAtNanos = new AtomicLong(System.nanoTime());
 
     private volatile Method getDamageMetadata;
     private volatile Method getTarget;
@@ -278,6 +280,8 @@ public final class MythicMobsKnockbackBridge {
     }
 
     private void markNoKnockback(Entity target, UUID sourceId) {
+        // Only player knockback consumes markers.
+        if (!(target instanceof Player)) return;
         final long now = System.nanoTime();
         final NoKnockbackMarker marker = OCMScheduler.isOwnedByCurrentRegion(target)
                 ? new NoKnockbackMarker(sourceId, TickClock.ownerTick(), target.getTicksLived(), now, Long.MAX_VALUE)
@@ -287,9 +291,12 @@ public final class MythicMobsKnockbackBridge {
     }
 
     private void pruneOldMarkers(long now) {
-        final Iterator<Map.Entry<UUID, NoKnockbackMarker>> it = markers.entrySet().iterator();
-        while (it.hasNext()) {
-            if (now - it.next().getValue().createdAtNanos > PRUNE_AGE_NANOS) it.remove();
+        final long next = nextPruneAtNanos.get();
+        if (now - next < 0 || !nextPruneAtNanos.compareAndSet(next, now + PRUNE_INTERVAL_NANOS)) return;
+        for (Map.Entry<UUID, NoKnockbackMarker> entry : markers.entrySet()) {
+            final NoKnockbackMarker marker = entry.getValue();
+            // Conditional, so a fresh marker put by the target's thread meanwhile is kept.
+            if (now - marker.createdAtNanos > PRUNE_AGE_NANOS) markers.remove(entry.getKey(), marker);
         }
     }
 
