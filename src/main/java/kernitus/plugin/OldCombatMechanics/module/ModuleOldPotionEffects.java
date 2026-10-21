@@ -223,14 +223,22 @@ public class ModuleOldPotionEffects extends OCMModule {
         if (!(entity instanceof LivingEntity)) return;
         final LivingEntity livingEntity = (LivingEntity) entity;
 
+        final Runnable update = compensationUpdate(event, livingEntity);
+        if (update == null) return;
+
+        // Folia also fires this event for an entity no region owns yet, such as the smaller slimes a
+        // splitting slime spawns, whose attributes cannot be read here: the change waits for the
+        // entity's own thread, and is dropped with the entity if it never ticks.
+        OCMScheduler.runOn(livingEntity, update, null);
+    }
+
+    private Runnable compensationUpdate(Event event, LivingEntity livingEntity) {
         if (livingEntity instanceof OfflinePlayer && !((OfflinePlayer) livingEntity).isOnline()) {
-            WeaknessCompensation.remove(livingEntity);
-            return;
+            return () -> WeaknessCompensation.remove(livingEntity);
         }
 
         if (!isEnabled(livingEntity)) {
-            WeaknessCompensation.remove(livingEntity);
-            return;
+            return () -> WeaknessCompensation.remove(livingEntity);
         }
 
         final PotionEffect newEffect = extractPotionEffect(event, potionEffectGetNewEffect);
@@ -238,13 +246,12 @@ public class ModuleOldPotionEffects extends OCMModule {
         final PotionEffectType type = newEffect != null ? newEffect.getType() :
                 (oldEffect != null ? oldEffect.getType() : null);
         final PotionEffectType weakness = XPotion.WEAKNESS.get();
-        if (type == null || weakness == null || !type.equals(weakness)) return;
+        if (type == null || weakness == null || !type.equals(weakness)) return null;
 
         if (newEffect != null && newEffect.getAmplifier() >= 0) {
-            WeaknessCompensation.apply(livingEntity);
-        } else {
-            WeaknessCompensation.remove(livingEntity);
+            return () -> WeaknessCompensation.apply(livingEntity);
         }
+        return () -> WeaknessCompensation.remove(livingEntity);
     }
 
     private Entity extractEntity(Event event) {
